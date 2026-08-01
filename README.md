@@ -1,7 +1,15 @@
 # Riftbound Collection Tracker
 
-Local tracker for an IRL Riftbound (Riot's LoL TCG) card collection. Open
-`index.html` in a browser — no server, no build step, no install.
+Tracker for an IRL Riftbound (Riot's LoL TCG) card collection.
+
+**Live: https://michaelplakiotis.github.io/riftbound-collection/**
+
+No server, no build step, no install — opening `index.html` locally works too.
+
+> Your collection is stored in `localStorage`, which is per-origin. The live site
+> and a local copy therefore keep **separate** collections; use Export/Import to
+> move data between them. Pick one as home — the phone-friendly live site is the
+> obvious choice.
 
 ## Usage
 
