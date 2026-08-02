@@ -49,7 +49,7 @@ constraint in the official [Core Rules](https://www.riftbound.one/rules/riftboun
 | 103.2.a | Single-domain cards need their domain in the identity; multi-domain cards need *all* of theirs |
 | 103.2.b | Main deck of exactly 40, Chosen Champion included |
 | 103.2.c | Chosen Champion is a champion **unit** sharing the Legend's champion tag — signature units don't qualify |
-| 103.2.d | Max 3 copies of a named card |
+| 103.2.d | Max 3 copies of a named card — 1 for cards with **Unique** |
 | 103.2.e | Max 3 Signature cards *in total*, all carrying the Legend's tag |
 | 103.3 | Separate 12-card rune deck, all within the identity |
 | 103.4 | 3 battlefields, no two sharing a name |
@@ -76,6 +76,44 @@ stays castable. Treat the list as a strong first draft, not a tuned decklist.
 
 If your collection can't reach 40, you get the best partial deck plus exactly
 what's missing — which doubles as a shopping list.
+
+### Copy list
+
+**Copy list** produces the format [Rift Atlas](https://riftatlas.com) and the
+other importers parse:
+
+```
+Legend:
+1 Kennen, Heart of the Tempest
+
+Champion:
+1 Kennen, Storm of Shuriken
+
+MainDeck:
+3 Teemo, Scout
+2 Kennen, Storm of Shuriken
+...
+```
+
+Three things their parser is strict about, each of which broke the first version:
+
+- A line is only a section header if it **ends with a colon**. `Main Deck (39)`
+  isn't a header — the count makes it fall through and be read as a broken card
+  line, which cascades into "every section is missing".
+- The Chosen Champion is its **own one-card section**. Further copies belong in
+  `MainDeck`, so that Champion + MainDeck is exactly 40, not 41.
+- Names must match their catalogue. Riftcodex writes older sets as
+  `Vi - Destructive` and prefixes tags on some legends
+  (`Yordle, Kennen - Heart of the Tempest`); their catalogue contains no name
+  with a dash and none with two commas. The export rewrites the last `" - "` to
+  `", "` and drops anything before a comma to its left, which takes name
+  resolution from 762/941 to **939/941** against their real 1240-card
+  catalogue. The two that still fail are Vendetta cards missing from their
+  catalogue entirely.
+
+Verified by extracting Rift Atlas's own `parseDecklist` from their site bundle
+and running generated decks through it: 10/10 accepted, zero errors, zero
+warnings, and every card name resolving.
 
 ## Refreshing card data
 

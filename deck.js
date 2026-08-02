@@ -62,6 +62,17 @@
 
   const MAIN_TYPES = new Set(['Unit', 'Spell', 'Gear']);
 
+  /**
+   * Copies allowed of one named card. The Unique keyword makes a card a one-of;
+   * everything else caps at 3. Only three cards carry it today (the Spiritforged
+   * legendary gear), but running 3 of one would silently make the deck illegal.
+   */
+  const copyLimit = (card) =>
+    (card.keywords || []).some((k) => k.trim().toLowerCase() === 'unique') ||
+    /\[\s*unique\s*\]/i.test(card.description || '')
+      ? 1
+      : MAX_COPIES;
+
   /** Rough power proxy — the game has no power rating, so rarity stands in. */
   const RARITY_SCORE = { common: 0, uncommon: 1, rare: 2.5, epic: 4, showcase: 4, promo: 2 };
 
@@ -189,7 +200,7 @@
         if (!allows(card)) continue;
 
         const already = takenByName.get(entry.key) || 0;
-        let room = Math.min(entry.qty, MAX_COPIES) - already;
+        let room = Math.min(entry.qty, copyLimit(card)) - already;
         if (room <= 0) continue;
 
         // 103.2.e — three Signature cards in total, not three of each.
@@ -360,7 +371,7 @@
       {
         name: champion.entry.name,
         entry: champion.entry,
-        count: Math.min(champion.entry.qty, MAX_COPIES),
+        count: Math.min(champion.entry.qty, copyLimit(champion.entry.card)),
         score: champion.score,
         chosen: true,
       },
@@ -488,26 +499,65 @@
     };
   }
 
-  /** Plain-text decklist, the format people paste into deck sites and chat. */
+  /**
+   * Rewrites a card name into the form the deck sites use.
+   *
+   * Riftcodex writes the older sets as `Vi - Destructive` and prefixes extra
+   * tags on some legends (`Yordle, Kennen - Heart of the Tempest`). Rift Atlas's
+   * catalogue has no name containing " - " and none with two commas: the same
+   * cards are `Vi, Destructive` and `Kennen, Heart of the Tempest`. So the last
+   * " - " becomes ", " and anything before a comma on its left is dropped.
+   *
+   * Measured against their full 1240-card catalogue: 939 of our 941 names
+   * resolve, up from 762 untransformed. The two that don't are Vendetta cards
+   * missing from their catalogue entirely, which no rewrite can fix.
+   */
+  function atlasName(name) {
+    const cut = name.lastIndexOf(' - ');
+    if (cut === -1) return name;
+    const left = name.slice(0, cut);
+    const comma = left.lastIndexOf(', ');
+    return `${comma === -1 ? left : left.slice(comma + 2)}, ${name.slice(cut + 3)}`;
+  }
+
+  /**
+   * Plain-text decklist in the format Rift Atlas and the other importers parse.
+   *
+   * Their grammar, read off Rift Atlas's own parser and exporter:
+   *   - a line only counts as a section header if it ends with `:`. The text is
+   *     lowercased with all whitespace stripped and matched against a fixed
+   *     alias table, so `MainDeck:` and `Main Deck:` both work — but
+   *     `Main Deck (39)` does not, because the count stops it being a header at
+   *     all and it gets read as a malformed card line.
+   *   - entries are `<count> <name>`, optionally `<count> <name> [CODE]`
+   *   - sections are separated by a blank line, in the order below
+   *
+   * Codes are left out because their exporter defaults to names only, and an
+   * unresolvable code is a hard error where a name is merely looked up.
+   *
+   * The Chosen Champion is its own one-card section — the copy that starts in
+   * the champion zone — and any further copies belong in MainDeck, so Champion
+   * plus MainDeck comes to exactly 40.
+   */
   function toText(deck) {
     if (!deck?.ok) return '';
-    const line = (p) => `${p.count} ${p.name}`;
-    const section = (title, picks) =>
-      picks.length ? `${title} (${picks.reduce((n, p) => n + p.count, 0)})\n${picks.map(line).join('\n')}\n` : '';
 
-    const main = deck.main.filter((p) => !p.chosen);
+    const section = (header, picks) =>
+      `${header}\n${picks.map((p) => `${p.count} ${atlasName(p.name)}`).join('\n')}`.trimEnd();
+
+    const champion = deck.main.find((p) => p.chosen);
+    const mainDeck = deck.main
+      .map((p) => (p.chosen ? { ...p, count: p.count - 1 } : p))
+      .filter((p) => p.count > 0);
+
     return [
-      `Legend: ${deck.legendName}`,
-      `Chosen Champion: ${deck.champion.name}`,
-      '',
-      section('Champion', deck.main.filter((p) => p.chosen)),
-      section('Main Deck', main),
-      section('Runes', deck.runes),
-      section('Battlefields', deck.battlefields),
-    ]
-      .join('\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
+      section('Legend:', [{ name: deck.legendName, count: 1 }]),
+      section('Champion:', champion ? [{ name: champion.name, count: 1 }] : []),
+      section('MainDeck:', mainDeck),
+      section('Battlefields:', deck.battlefields),
+      section('Runes:', deck.runes),
+      section('Sideboard:', []),
+    ].join('\n\n');
   }
 
   global.RiftboundDeck = { buildDeck, toText, cardName, MAIN_DECK, RUNE_DECK, BATTLEFIELDS, MAX_COPIES };
