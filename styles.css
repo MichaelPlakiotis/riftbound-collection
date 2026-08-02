@@ -191,8 +191,27 @@ button, input, select { font: inherit; color: inherit; }
   gap: 14px 28px;
 }
 
-.setrow { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; }
+/* Rows are buttons — clicking one filters the grid to that set. */
+.setrow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 10px;
+  align-items: center;
+  padding: 6px 8px;
+  margin: -6px -8px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.setrow:hover { background: var(--bg-card); border-color: var(--line); }
+.setrow.is-active { border-color: var(--accent-dim); background: rgba(200, 170, 110, .1); }
+.setrow.is-active .setrow-name { color: var(--accent); }
 .setrow.is-promo { opacity: .6; }
+.setrow.is-promo:hover, .setrow.is-promo.is-active { opacity: 1; }
 .setrow-name { font-size: 14px; font-weight: 600; }
 .setrow-name small { color: var(--text-dim); font-weight: 400; margin-left: 6px; }
 .setrow-num { font-size: 13px; color: var(--text-dim); align-self: center; }
@@ -203,7 +222,9 @@ button, input, select { font: inherit; color: inherit; }
   border-radius: 4px;
   overflow: hidden;
 }
+.setrow:hover .bar { background: var(--bg-raise); }
 .bar-fill {
+  display: block;
   height: 100%;
   background: linear-gradient(90deg, var(--accent-dim), var(--accent));
   border-radius: 4px;
@@ -369,20 +390,53 @@ main { padding: 16px 20px 60px; }
 .statline .hint { color: var(--text-dim); font-size: 12px; }
 
 /* Collection worth — the headline number, so it reads as a figure rather than
-   as another stat in the row. */
+   as another stat in the row. The chip is a wrapper so the dismiss button can
+   sit inside the same border without nesting one button in another. */
+.stat-value-wrap {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--accent-dim);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(200, 170, 110, .14), rgba(200, 170, 110, .05));
+  overflow: hidden;
+}
+.stat-value-wrap:hover { border-color: var(--accent); }
 .stat-value {
   display: flex;
   align-items: baseline;
   gap: 8px;
   padding: 3px 12px 4px;
-  border: 1px solid var(--accent-dim);
-  border-radius: 8px;
-  background: linear-gradient(180deg, rgba(200, 170, 110, .14), rgba(200, 170, 110, .05));
+  border: 0;
+  background: none;
   cursor: pointer;
   font: inherit;
   text-align: left;
 }
-.stat-value:hover { border-color: var(--accent); background: rgba(200, 170, 110, .2); }
+.stat-value:hover { background: rgba(200, 170, 110, .18); }
+.stat-value-x {
+  padding: 0 8px;
+  border: 0;
+  border-left: 1px solid var(--accent-dim);
+  background: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.stat-value-x:hover { background: rgba(200, 170, 110, .18); color: var(--text); }
+
+/* Collapsed state — quiet enough to ignore, obvious enough to find again. */
+.stat-value-show {
+  padding: 3px 10px 4px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.stat-value-show:hover { border-color: var(--accent-dim); color: var(--accent); }
 .stat-value-label {
   font-size: 11px;
   letter-spacing: .09em;

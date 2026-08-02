@@ -1,6 +1,7 @@
 /* Riftbound collection tracker — local-only, state lives in localStorage. */
 
 const STORAGE_KEY = 'riftbound-collection-v1';
+const PREFS_KEY = 'riftbound-prefs-v1';
 const DATA = window.RIFTBOUND_DATA;
 
 if (!DATA) {
@@ -54,6 +55,27 @@ function save() {
       toast('Could not save — storage may be full');
     }
   }, 150);
+}
+
+/** UI preferences, kept apart from the collection so exports stay portable. */
+const prefs = loadPrefs();
+
+function loadPrefs() {
+  const defaults = { showValue: true };
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    return raw ? { ...defaults, ...JSON.parse(raw) } : defaults;
+  } catch {
+    return defaults;
+  }
+}
+
+function savePrefs() {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    /* preferences are cosmetic — a full quota shouldn't interrupt anything */
+  }
 }
 
 const qtyOf = (id) => collection[id]?.q || 0;
@@ -265,17 +287,29 @@ function renderStats() {
     ? Math.round((uniqueOwned / COLLECTABLE.length) * 100)
     : 0;
 
-  const val = PRICE_DATA ? collectionValue() : null;
+  // Worth is only computed when it's actually on screen — walking the whole
+  // collection on every +/− tap isn't worth it for a hidden number.
+  const val = PRICE_DATA && prefs.showValue ? collectionValue() : null;
 
-  const valueHTML = val
-    ? `<button type="button" class="stat-value" id="stat-value"
-          title="TCGplayer market value of every copy you own${
-            val.unpriced ? ` · ${val.unpriced} copies have no price data` : ''
-          }. Click for the breakdown.">
-         <span class="stat-value-label">Collection worth</span>
-         <span class="stat-value-num">${money(val.total)}</span>
-       </button>`
-    : '';
+  let valueHTML = '';
+  if (val) {
+    valueHTML = `
+      <span class="stat-value-wrap">
+        <button type="button" class="stat-value" id="stat-value"
+            title="TCGplayer market value of every copy you own${
+              val.unpriced ? ` · ${val.unpriced} copies have no price data` : ''
+            }. Click for the breakdown.">
+          <span class="stat-value-label">Collection worth</span>
+          <span class="stat-value-num">${money(val.total)}</span>
+        </button>
+        <button type="button" class="stat-value-x" id="stat-value-hide"
+                title="Hide collection worth" aria-label="Hide collection worth">✕</button>
+      </span>`;
+  } else if (PRICE_DATA) {
+    valueHTML = `<button type="button" class="stat-value-show" id="stat-value-show">
+                   Show collection worth
+                 </button>`;
+  }
 
   el('statline').innerHTML =
     valueHTML +
@@ -299,14 +333,18 @@ function renderStats() {
       const owned = inSet.filter((c) => qtyOf(c.id) > 0).length;
       const p = inSet.length ? Math.round((owned / inSet.length) * 100) : 0;
       const worth = setValue[s.id];
+      const active = state.set === s.id;
       return `
-        <div class="setrow${s.promo ? ' is-promo' : ''}">
-          <div class="setrow-name">${esc(s.name)} <small>${esc(s.id)}</small></div>
-          <div class="setrow-num">${owned} / ${inSet.length} · ${p}%${
+        <button type="button" class="setrow${s.promo ? ' is-promo' : ''}${
+          active ? ' is-active' : ''
+        }" data-set="${esc(s.id)}" aria-pressed="${active}"
+          title="${active ? 'Show all sets again' : `Show only ${esc(s.name)}`}">
+          <span class="setrow-name">${esc(s.name)} <small>${esc(s.id)}</small></span>
+          <span class="setrow-num">${owned} / ${inSet.length} · ${p}%${
             worth ? ` · <b>${money(worth)}</b>` : ''
-          }</div>
-          <div class="bar"><div class="bar-fill" style="width:${p}%"></div></div>
-        </div>`;
+          }</span>
+          <span class="bar"><span class="bar-fill" style="width:${p}%"></span></span>
+        </button>`;
     })
     .join('');
 
@@ -451,12 +489,29 @@ el('btn-stats').addEventListener('click', () => {
 
 // The worth chip is rebuilt on every quantity change, so delegate from the statline.
 el('statline').addEventListener('click', (e) => {
+  if (e.target.closest('#stat-value-hide') || e.target.closest('#stat-value-show')) {
+    prefs.showValue = !prefs.showValue;
+    savePrefs();
+    renderStats();
+    return;
+  }
+
   if (!e.target.closest('#stat-value')) return;
   const panel = el('stats-panel');
   panel.hidden = false;
   el('btn-stats').setAttribute('aria-expanded', 'true');
   renderStats();
   panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+});
+
+// Set rows double as a filter — clicking one narrows the grid to that set,
+// clicking the active one goes back to everything.
+el('stats-panel').addEventListener('click', (e) => {
+  const row = e.target.closest('.setrow');
+  if (!row) return;
+  state.set = state.set === row.dataset.set ? '' : row.dataset.set;
+  el('f-set').value = state.set;
+  render();
 });
 
 el('btn-reset').addEventListener('click', () => {
