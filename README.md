@@ -24,16 +24,16 @@ No server, no build step, no install — opening `index.html` locally works too.
   in Vendetta) match either one. Promo sets are hidden by default and excluded
   from the overall completion figure; picking a promo set explicitly still shows
   it.
-- **Set progress** — a panel of per-set completion bars (owned / total, percent,
-  and value once prices are synced). Each row is also a shortcut: click one to
-  filter the grid to that set, click it again to go back to everything. Unlike
-  the overall figure, these rows count promos.
-- **Collection worth** — total market value of everything you own, in the header.
-  Click it for the breakdown: what the total is made of, the cards carrying most
-  of it, and value per set. Promos count here even though they sit outside set
-  completion — they're still money on the shelf. The **✕** on the chip hides the
-  number (per-card prices stay); the preference is remembered under
-  `riftbound-prefs-v1`, separate from the collection so exports stay portable.
+- **Collection worth** — total market value of everything you own, in the header,
+  and the one control for the detail panel. Click it to show or hide: the
+  breakdown (what the total is made of and the cards carrying most of it) and
+  per-set progress bars — owned / total, percent, and value per set. Promos count
+  here even though they sit outside set completion; they're still money on the
+  shelf. Open or closed is remembered under `riftbound-prefs-v1`, kept separate
+  from the collection so exports stay portable. Without a price sync the chip
+  reads "Set progress" and opens the same panel minus the money.
+- **Set rows are also filters** — click one to narrow the grid to that set, click
+  it again for everything. It drives the same filter as the set dropdown.
 - **Prices** — market price under each card, the value of your stack once you own
   more than one, and the move since the last sync. A move has to clear both 3%
   and 5¢ to show, otherwise a penny of rounding on a 5¢ common reads as ±20%.

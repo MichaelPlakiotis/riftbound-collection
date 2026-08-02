@@ -61,7 +61,7 @@ function save() {
 const prefs = loadPrefs();
 
 function loadPrefs() {
-  const defaults = { showValue: true };
+  const defaults = { showDetails: false };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
     return raw ? { ...defaults, ...JSON.parse(raw) } : defaults;
@@ -287,38 +287,42 @@ function renderStats() {
     ? Math.round((uniqueOwned / COLLECTABLE.length) * 100)
     : 0;
 
-  // Worth is only computed when it's actually on screen — walking the whole
-  // collection on every +/− tap isn't worth it for a hidden number.
-  const val = PRICE_DATA && prefs.showValue ? collectionValue() : null;
+  const open = prefs.showDetails;
+  const val = PRICE_DATA ? collectionValue() : null;
 
-  let valueHTML = '';
-  if (val) {
-    valueHTML = `
-      <span class="stat-value-wrap">
-        <button type="button" class="stat-value" id="stat-value"
-            title="TCGplayer market value of every copy you own${
-              val.unpriced ? ` · ${val.unpriced} copies have no price data` : ''
-            }. Click for the breakdown.">
-          <span class="stat-value-label">Collection worth</span>
-          <span class="stat-value-num">${money(val.total)}</span>
-        </button>
-        <button type="button" class="stat-value-x" id="stat-value-hide"
-                title="Hide collection worth" aria-label="Hide collection worth">✕</button>
-      </span>`;
-  } else if (PRICE_DATA) {
-    valueHTML = `<button type="button" class="stat-value-show" id="stat-value-show">
-                   Show collection worth
-                 </button>`;
-  }
+  // One control for the lot: the worth chip is also the handle for the panel
+  // holding set progress and the per-card value breakdown. Without a price sync
+  // there's no figure to show, so the handle falls back to a plain label.
+  const toggleHTML = val
+    ? `<button type="button" class="stat-value" id="stat-toggle" aria-expanded="${open}"
+          aria-controls="stats-panel"
+          title="TCGplayer market value of every copy you own${
+            val.unpriced ? ` · ${val.unpriced} copies have no price data` : ''
+          }. Click for set progress and the breakdown.">
+         <span class="stat-value-label">Collection worth</span>
+         <span class="stat-value-num">${money(val.total)}</span>
+         <span class="stat-caret" aria-hidden="true">${open ? '▴' : '▾'}</span>
+       </button>`
+    : `<button type="button" class="stat-value is-bare" id="stat-toggle" aria-expanded="${open}"
+          aria-controls="stats-panel" title="Completion per set">
+         <span class="stat-value-label">Set progress</span>
+         <span class="stat-caret" aria-hidden="true">${open ? '▴' : '▾'}</span>
+       </button>`;
 
   el('statline').innerHTML =
-    valueHTML +
+    toggleHTML +
     `<span><b>${uniqueOwned}</b> / ${COLLECTABLE.length} unique <span class="pct">(${pct}%)</span></span>` +
     `<span><b>${totalCopies}</b> total copies</span>` +
     `<span><b>${wishCount}</b> on wishlist</span>`;
 
   const panel = el('stats-panel');
-  if (panel.hidden) return;
+  panel.hidden = !open;
+  // Emptied rather than just hidden — the breakdown holds card thumbnails, and
+  // there's no reason to keep them (or a stale total) parked in the document.
+  if (!open) {
+    panel.innerHTML = '';
+    return;
+  }
 
   const setValue = {};
   for (const line of val?.lines || []) {
@@ -480,28 +484,15 @@ el('f-hide-promos').addEventListener('change', (e) => {
   render();
 });
 
-el('btn-stats').addEventListener('click', () => {
-  const panel = el('stats-panel');
-  panel.hidden = !panel.hidden;
-  el('btn-stats').setAttribute('aria-expanded', String(!panel.hidden));
-  renderStats();
-});
-
-// The worth chip is rebuilt on every quantity change, so delegate from the statline.
+// The chip is rebuilt on every quantity change, so delegate from the statline.
 el('statline').addEventListener('click', (e) => {
-  if (e.target.closest('#stat-value-hide') || e.target.closest('#stat-value-show')) {
-    prefs.showValue = !prefs.showValue;
-    savePrefs();
-    renderStats();
-    return;
-  }
-
-  if (!e.target.closest('#stat-value')) return;
-  const panel = el('stats-panel');
-  panel.hidden = false;
-  el('btn-stats').setAttribute('aria-expanded', 'true');
+  if (!e.target.closest('#stat-toggle')) return;
+  prefs.showDetails = !prefs.showDetails;
+  savePrefs();
   renderStats();
-  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  if (prefs.showDetails) {
+    el('stats-panel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
 });
 
 // Set rows double as a filter — clicking one narrows the grid to that set,

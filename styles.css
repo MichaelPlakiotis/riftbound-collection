@@ -390,53 +390,33 @@ main { padding: 16px 20px 60px; }
 .statline .hint { color: var(--text-dim); font-size: 12px; }
 
 /* Collection worth — the headline number, so it reads as a figure rather than
-   as another stat in the row. The chip is a wrapper so the dismiss button can
-   sit inside the same border without nesting one button in another. */
-.stat-value-wrap {
-  display: flex;
-  align-items: stretch;
-  border: 1px solid var(--accent-dim);
-  border-radius: 8px;
-  background: linear-gradient(180deg, rgba(200, 170, 110, .14), rgba(200, 170, 110, .05));
-  overflow: hidden;
-}
-.stat-value-wrap:hover { border-color: var(--accent); }
+   as another stat in the row. It doubles as the handle for the detail panel,
+   which is what the caret is announcing. */
 .stat-value {
   display: flex;
   align-items: baseline;
   gap: 8px;
   padding: 3px 12px 4px;
-  border: 0;
-  background: none;
+  border: 1px solid var(--accent-dim);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(200, 170, 110, .14), rgba(200, 170, 110, .05));
   cursor: pointer;
   font: inherit;
   text-align: left;
 }
-.stat-value:hover { background: rgba(200, 170, 110, .18); }
-.stat-value-x {
-  padding: 0 8px;
-  border: 0;
-  border-left: 1px solid var(--accent-dim);
-  background: none;
-  color: var(--text-dim);
-  font-size: 11px;
-  line-height: 1;
-  cursor: pointer;
-}
-.stat-value-x:hover { background: rgba(200, 170, 110, .18); color: var(--text); }
+.stat-value:hover { border-color: var(--accent); background: rgba(200, 170, 110, .2); }
+.stat-value[aria-expanded="true"] { border-color: var(--accent); }
+.stat-caret { font-size: 10px; color: var(--accent); }
 
-/* Collapsed state — quiet enough to ignore, obvious enough to find again. */
-.stat-value-show {
-  padding: 3px 10px 4px;
-  border: 1px dashed var(--line);
-  border-radius: 8px;
-  background: none;
-  color: var(--text-dim);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
+/* No price sync — the chip is just a label, so it shouldn't wear the gold. */
+.stat-value.is-bare {
+  border-color: var(--line);
+  background: var(--bg-raise);
+  align-items: center;
+  padding: 5px 12px;
 }
-.stat-value-show:hover { border-color: var(--accent-dim); color: var(--accent); }
+.stat-value.is-bare:hover { border-color: var(--accent-dim); }
+.stat-value.is-bare .stat-caret { color: var(--text-dim); }
 .stat-value-label {
   font-size: 11px;
   letter-spacing: .09em;
