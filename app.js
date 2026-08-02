@@ -13,6 +13,17 @@ if (!DATA) {
 const CARDS = DATA.cards;
 const META = DATA.meta;
 
+// Prices are optional — the app works without ever running sync-prices.mjs.
+const PRICE_DATA = window.RIFTBOUND_PRICES || null;
+const PRICES = PRICE_DATA?.prices || {};
+const PRICE_META = PRICE_DATA?.meta || null;
+
+const priceOf = (id) => (typeof PRICES[id]?.m === 'number' ? PRICES[id].m : null);
+const prevPriceOf = (id) => (typeof PRICES[id]?.p === 'number' ? PRICES[id].p : null);
+
+const money = (n) =>
+  n >= 1000 ? `$${Math.round(n).toLocaleString('en-US')}` : `$${n.toFixed(2)}`;
+
 // Promo sets (organized play, judge, general promos) aren't part of normal set
 // completion, so they're excluded from the denominator and hidden by default.
 const PROMO_SETS = new Set(META.sets.filter((s) => s.promo).map((s) => s.id));
@@ -103,6 +114,37 @@ const esc = (s) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch])
   );
 
+/**
+ * Market price plus the move since the previous sync. The stack value only shows
+ * once you own more than one, otherwise it just repeats the unit price.
+ */
+function priceHTML(c, q) {
+  if (!PRICE_DATA) return '';
+  const p = priceOf(c.id);
+  if (p == null) {
+    return `<div class="card-price"><span class="price none" title="No TCGplayer sales data for this card">—</span></div>`;
+  }
+
+  const was = prevPriceOf(c.id);
+  let delta = '';
+  if (was && was > 0) {
+    const pct = Math.round(((p - was) / was) * 100);
+    // A penny of rounding on a $0.05 common reads as ±20%, so a move has to
+    // clear both a cash and a percentage floor before it's worth showing.
+    if (Math.abs(pct) >= 3 && Math.abs(p - was) >= 0.05) {
+      delta =
+        `<span class="delta ${pct > 0 ? 'up' : 'down'}" ` +
+        `title="Was ${money(was)} on ${esc(PRICE_META.previousSync || 'the last sync')}">` +
+        `${pct > 0 ? '↑' : '↓'}${Math.abs(pct)}%</span>`;
+    }
+  }
+
+  const stack = q > 1 ? `<span class="stack" title="${q} copies">${money(p * q)}</span>` : '';
+  return `<div class="card-price"><span class="price" title="TCGplayer market price, ${esc(
+    PRICE_META.synced
+  )}">${money(p)}</span>${delta}${stack}</div>`;
+}
+
 function cardHTML(c) {
   const q = qtyOf(c.id);
   const w = wishOf(c.id);
@@ -132,6 +174,7 @@ function cardHTML(c) {
           <span style="color:var(--r-${esc(c.rarity)}, #7d8896)">${esc(c.rarity)}</span>
           <span class="num">${esc(c.set_id)}-${esc(num)}</span>
         </div>
+        ${priceHTML(c, q)}
         <div class="stepper">
           <button type="button" data-act="dec" aria-label="Remove one" ${q === 0 ? 'disabled' : ''}>−</button>
           <input type="number" min="0" max="99" value="${q}" data-act="qty"
@@ -173,10 +216,46 @@ function refreshCard(id) {
   node.querySelector('[data-act="qty"]').value = q;
   node.querySelector('[data-act="dec"]').disabled = q === 0;
 
+  // The stack total depends on the count, so this row has to be redrawn too.
+  const priceRow = node.querySelector('.card-price');
+  if (priceRow) {
+    const card = CARDS.find((c) => c.id === id);
+    priceRow.outerHTML = priceHTML(card, q);
+  }
+
   renderStats();
 }
 
 /* ---------------- stats ---------------- */
+
+/**
+ * Worth of everything owned, promos included — they sit outside set completion
+ * but they're still money on the shelf. Also returns the per-card line values,
+ * which the breakdown panel reuses rather than walking the collection twice.
+ */
+function collectionValue() {
+  let total = 0;
+  let priced = 0;
+  let unpriced = 0;
+  const lines = [];
+
+  for (const c of CARDS) {
+    const q = qtyOf(c.id);
+    if (!q) continue;
+    const p = priceOf(c.id);
+    if (p == null) {
+      unpriced += q;
+      continue;
+    }
+    priced += q;
+    const line = p * q;
+    total += line;
+    lines.push({ card: c, q, unit: p, line });
+  }
+
+  lines.sort((a, b) => b.line - a.line);
+  return { total, priced, unpriced, lines };
+}
 
 function renderStats() {
   const uniqueOwned = COLLECTABLE.filter((c) => qtyOf(c.id) > 0).length;
@@ -186,7 +265,20 @@ function renderStats() {
     ? Math.round((uniqueOwned / COLLECTABLE.length) * 100)
     : 0;
 
+  const val = PRICE_DATA ? collectionValue() : null;
+
+  const valueHTML = val
+    ? `<button type="button" class="stat-value" id="stat-value"
+          title="TCGplayer market value of every copy you own${
+            val.unpriced ? ` · ${val.unpriced} copies have no price data` : ''
+          }. Click for the breakdown.">
+         <span class="stat-value-label">Collection worth</span>
+         <span class="stat-value-num">${money(val.total)}</span>
+       </button>`
+    : '';
+
   el('statline').innerHTML =
+    valueHTML +
     `<span><b>${uniqueOwned}</b> / ${COLLECTABLE.length} unique <span class="pct">(${pct}%)</span></span>` +
     `<span><b>${totalCopies}</b> total copies</span>` +
     `<span><b>${wishCount}</b> on wishlist</span>`;
@@ -194,21 +286,73 @@ function renderStats() {
   const panel = el('stats-panel');
   if (panel.hidden) return;
 
-  panel.innerHTML = META.sets
+  const setValue = {};
+  for (const line of val?.lines || []) {
+    setValue[line.card.set_id] = (setValue[line.card.set_id] || 0) + line.line;
+  }
+
+  const sets = META.sets
     .map((s) => {
       // Per-set rows count every card in the set, promos included — the promo
       // exclusion only applies to the overall completion figure above.
       const inSet = CARDS.filter((c) => c.set_id === s.id);
       const owned = inSet.filter((c) => qtyOf(c.id) > 0).length;
       const p = inSet.length ? Math.round((owned / inSet.length) * 100) : 0;
+      const worth = setValue[s.id];
       return `
         <div class="setrow${s.promo ? ' is-promo' : ''}">
           <div class="setrow-name">${esc(s.name)} <small>${esc(s.id)}</small></div>
-          <div class="setrow-num">${owned} / ${inSet.length} · ${p}%</div>
+          <div class="setrow-num">${owned} / ${inSet.length} · ${p}%${
+            worth ? ` · <b>${money(worth)}</b>` : ''
+          }</div>
           <div class="bar"><div class="bar-fill" style="width:${p}%"></div></div>
         </div>`;
     })
     .join('');
+
+  panel.innerHTML = (val ? valuePanelHTML(val) : '') + sets;
+}
+
+/** Headline worth, what it's made of, and the cards actually carrying it. */
+function valuePanelHTML(val) {
+  const top = val.lines.slice(0, 8);
+  const topShare = top.reduce((n, l) => n + l.line, 0);
+  const share = val.total ? Math.round((topShare / val.total) * 100) : 0;
+
+  const rows = top
+    .map(
+      (l) => `
+      <li>
+        <img src="${esc(l.card.image || '')}" alt="" loading="lazy" decoding="async">
+        <span class="vl-name">${esc(l.card.name)}</span>
+        <span class="vl-qty">${l.q}×</span>
+        <span class="vl-unit">${money(l.unit)}</span>
+        <span class="vl-line">${money(l.line)}</span>
+      </li>`
+    )
+    .join('');
+
+  return `
+    <div class="value-panel">
+      <div class="value-head">
+        <span class="value-label">Collection worth</span>
+        <span class="value-big">${money(val.total)}</span>
+        <span class="value-meta">
+          ${val.priced.toLocaleString('en-US')} copies priced${
+            val.unpriced ? ` · ${val.unpriced} with no sales data` : ''
+          }<br>
+          TCGplayer market, ${esc(PRICE_META.synced)}
+        </span>
+      </div>
+      ${
+        top.length
+          ? `<div class="value-top">
+               <h4>Most valuable — ${share}% of the total</h4>
+               <ol class="value-list">${rows}</ol>
+             </div>`
+          : `<div class="value-top"><h4>Nothing owned yet</h4></div>`
+      }
+    </div>`;
 }
 
 /* ---------------- events ---------------- */
@@ -252,6 +396,8 @@ el('search').addEventListener('input', (e) => {
 // find bar only sees the cards already in the DOM. Escape gives a way back out.
 document.addEventListener('keydown', (e) => {
   const search = el('search');
+  // The deck dialog traps focus; leave the browser's own find bar alone there.
+  if (deckModal.open) return;
 
   if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key?.toLowerCase() === 'f') {
     e.preventDefault();
@@ -301,6 +447,16 @@ el('btn-stats').addEventListener('click', () => {
   panel.hidden = !panel.hidden;
   el('btn-stats').setAttribute('aria-expanded', String(!panel.hidden));
   renderStats();
+});
+
+// The worth chip is rebuilt on every quantity change, so delegate from the statline.
+el('statline').addEventListener('click', (e) => {
+  if (!e.target.closest('#stat-value')) return;
+  const panel = el('stats-panel');
+  panel.hidden = false;
+  el('btn-stats').setAttribute('aria-expanded', 'true');
+  renderStats();
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 });
 
 el('btn-reset').addEventListener('click', () => {
@@ -363,6 +519,161 @@ el('file-import').addEventListener('change', async (e) => {
   } finally {
     e.target.value = '';
   }
+});
+
+/* ---------------- deck generator ---------------- */
+
+const deckModal = el('deck-modal');
+let currentDeck = null;
+
+const CURVE_LABELS = { 2: '≤2', 3: '3', 4: '4', 5: '5', 6: '6', 7: '7+' };
+
+function domainDots(card) {
+  return card.domains
+    .map((d) => `<span class="dot" style="background:var(--f-${esc(d)}, #7d8896)" title="${esc(d)}"></span>`)
+    .join('');
+}
+
+function deckRow(pick) {
+  const c = pick.entry.card;
+  const p = priceOf(c.id);
+  const energy = c.stats.energy;
+  return `
+    <li class="deck-row">
+      <span class="deck-count">${pick.count}×</span>
+      <img class="deck-thumb" src="${esc(c.image || '')}" alt="" loading="lazy" decoding="async">
+      <span class="deck-row-name">${esc(pick.name)}</span>
+      <span class="deck-dots">${domainDots(c)}</span>
+      <span class="deck-energy">${
+        energy == null ? '' : `<b title="Energy cost">${energy}</b>`
+      }</span>
+      <span class="deck-row-price">${p == null ? '—' : money(p * pick.count)}</span>
+    </li>`;
+}
+
+function deckSection(title, picks) {
+  if (!picks.length) return '';
+  const n = picks.reduce((a, b) => a + b.count, 0);
+  return `
+    <section class="deck-section">
+      <h3>${esc(title)} <span>${n}</span></h3>
+      <ul>${picks.map(deckRow).join('')}</ul>
+    </section>`;
+}
+
+function renderDeck() {
+  const body = el('deck-body');
+  const deck = currentDeck;
+
+  if (!deck?.ok) {
+    el('deck-sub').textContent = '';
+    body.innerHTML = `<p class="deck-empty">${esc(deck?.reason || 'Could not build a deck.')}</p>
+      <p class="deck-empty-hint">Mark the cards you own with the <b>+</b> buttons first — the
+      generator only ever uses copies you actually have.</p>`;
+    el('deck-copy').disabled = true;
+    return;
+  }
+
+  el('deck-copy').disabled = false;
+  el('deck-sub').innerHTML =
+    `${esc(deck.legendName)} · ${deck.identity.map((d) => `<span class="dot" ` +
+      `style="background:var(--f-${esc(d)})"></span>${esc(titleCase(d))}`).join(' ')}`;
+
+  const maxCurve = Math.max(1, ...Object.values(deck.curve));
+  const curve = Object.keys(CURVE_LABELS)
+    .map((k) => {
+      const n = deck.curve[k] || 0;
+      return `<div class="curve-col" title="${n} card${n === 1 ? '' : 's'} at ${CURVE_LABELS[k]} energy">
+        <div class="curve-bar" style="height:${Math.round((n / maxCurve) * 100)}%"></div>
+        <span class="curve-n">${n}</span><span class="curve-k">${CURVE_LABELS[k]}</span></div>`;
+    })
+    .join('');
+
+  const runeSplit = Object.entries(deck.runeSplit || {})
+    .map(([d, n]) => `<span class="dot" style="background:var(--f-${esc(d)})"></span>${n}`)
+    .join(' ');
+
+  const status = deck.complete
+    ? `<p class="deck-status ok">Legal 40-card deck — every rule checks out.</p>`
+    : `<ul class="deck-status warn">${deck.issues.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>`;
+
+  const main = deck.main.filter((p) => !p.chosen);
+  const of = (t) => main.filter((p) => p.entry.card.type === t);
+
+  body.innerHTML = `
+    <div class="deck-stats">
+      <div><b>${deck.counts.main}</b>/40 main</div>
+      <div><b>${deck.counts.units}</b> units</div>
+      <div><b>${deck.counts.runes}</b>/12 runes ${runeSplit}</div>
+      <div><b>${deck.counts.battlefields}</b>/3 battlefields</div>
+      ${PRICE_DATA ? `<div><b class="pct">${money(deck.value)}</b> deck value</div>` : ''}
+    </div>
+    ${status}
+    <div class="deck-curve">${curve}</div>
+    <div class="deck-columns">
+      ${deckSection('Legend', [{ name: deck.legendName, entry: deck.legendEntry, count: 1 }])}
+      ${deckSection('Chosen Champion', deck.main.filter((p) => p.chosen))}
+      ${deckSection('Units', of('Unit'))}
+      ${deckSection('Spells', of('Spell'))}
+      ${deckSection('Gear', of('Gear'))}
+      ${deckSection('Runes', deck.runes)}
+      ${deckSection('Battlefields', deck.battlefields)}
+    </div>
+    <p class="deck-note">Card choices are a heuristic — legality is exact, but which
+    of your legal cards are <em>best</em> together is a judgement call the generator
+    approximates from rarity, champion tags, energy curve and keyword density.</p>`;
+}
+
+function buildDeck(legendId = null) {
+  currentDeck = window.RiftboundDeck.buildDeck({
+    cards: CARDS,
+    qtyOf,
+    priceOf,
+    legendId,
+  });
+
+  const sel = el('deck-legend');
+  const legends = currentDeck.legends || [];
+  sel.innerHTML =
+    `<option value="">Best legend (auto)</option>` +
+    legends
+      .map((l) => `<option value="${esc(l.card.id)}">${esc(l.name)}</option>`)
+      .join('');
+  sel.value = legendId || '';
+  sel.hidden = legends.length < 2;
+
+  renderDeck();
+}
+
+el('btn-deck').addEventListener('click', () => {
+  buildDeck();
+  deckModal.showModal();
+});
+
+el('deck-legend').addEventListener('change', (e) => buildDeck(e.target.value || null));
+el('deck-close').addEventListener('click', () => deckModal.close());
+
+el('deck-copy').addEventListener('click', async () => {
+  const text = window.RiftboundDeck.toText(currentDeck);
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('Decklist copied');
+  } catch {
+    // Clipboard needs a secure context; fall back to a download.
+    const blob = new Blob([text], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'riftbound-deck.txt';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('Decklist downloaded');
+  }
+});
+
+// Clicking the backdrop closes, matching how the rest of the page behaves.
+deckModal.addEventListener('click', (e) => {
+  if (e.target === deckModal) deckModal.close();
 });
 
 let toastTimer;

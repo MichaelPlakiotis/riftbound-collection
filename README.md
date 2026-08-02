@@ -25,8 +25,57 @@ No server, no build step, no install — opening `index.html` locally works too.
   from the overall completion figure; picking a promo set explicitly still shows
   it.
 - **Sets** — per-set completion bars.
+- **Collection worth** — total market value of everything you own, in the header.
+  Click it for the breakdown: what the total is made of, the cards carrying most
+  of it, and value per set. Promos count here even though they sit outside set
+  completion — they're still money on the shelf.
+- **Prices** — market price under each card, the value of your stack once you own
+  more than one, and the move since the last sync. A move has to clear both 3%
+  and 5¢ to show, otherwise a penny of rounding on a 5¢ common reads as ±20%.
+- **Build deck** — generates a legal, playable deck from cards you own. See
+  below.
 - **Export / Import** — JSON backup. `localStorage` is per-browser and gets
   wiped if you clear site data, so export occasionally.
+
+## Deck generator
+
+Picks the Legend your collection best supports, then builds around it. Every
+constraint in the official [Core Rules](https://www.riftbound.one/rules/riftbound-core-rules.pdf)
+§103 is enforced exactly:
+
+| Rule | Enforced |
+|------|----------|
+| 103.1.b | One Champion Legend; its two domains set the Domain Identity |
+| 103.2.a | Single-domain cards need their domain in the identity; multi-domain cards need *all* of theirs |
+| 103.2.b | Main deck of exactly 40, Chosen Champion included |
+| 103.2.c | Chosen Champion is a champion **unit** sharing the Legend's champion tag — signature units don't qualify |
+| 103.2.d | Max 3 copies of a named card |
+| 103.2.e | Max 3 Signature cards *in total*, all carrying the Legend's tag |
+| 103.3 | Separate 12-card rune deck, all within the identity |
+| 103.4 | 3 battlefields, no two sharing a name |
+
+On top of the rules, it only ever uses copies you actually own — counted across
+printings, since an alternate art is the same named card.
+
+Two data quirks it has to work around, both verified against the full catalogue:
+
+- Riftcodex punctuates Vendetta reprints with a comma where earlier sets used a
+  dash. `Jayce, Man of Progress` and `Jayce - Man of Progress` are one card, and
+  16 pairs are affected — without merging them the builder would happily run six
+  copies. All 16 agree on type, domains, energy, might and power, so nothing
+  distinct gets conflated.
+- Some reprints drop their region tags (`Draven, Showboat` loses Noxus), so tags
+  are unioned across printings.
+
+**What isn't exact:** which of your legal cards are *best* together. That's
+approximated from rarity, champion-tag synergy, text that names your champion,
+energy curve, colour requirements and keyword density, aiming for ~23 units and
+a curve peaking at 3–4 energy. Runes are split in proportion to the coloured
+power your chosen cards actually demand, with a floor of 4 so the off-domain
+stays castable. Treat the list as a strong first draft, not a tuned decklist.
+
+If your collection can't reach 40, you get the best partial deck plus exactly
+what's missing — which doubles as a shopping list.
 
 ## Refreshing card data
 
@@ -39,6 +88,7 @@ When a new set drops:
 
 ```sh
 node sync-cards.mjs     # ~30 s
+node sync-prices.mjs    # ~15 s — run this one whenever you want fresh prices
 ```
 
 Set names and release dates come from the API, so a new set needs no code
@@ -70,13 +120,20 @@ The base printing always sorts first and keeps the clean ID.
 ```
 index.html       markup
 styles.css       styles
-app.js           filtering, stats, persistence, export/import
-sync-cards.mjs   pulls cards from the RiftScribe API
+app.js           filtering, stats, prices, persistence, export/import, deck UI
+deck.js          deck generator — rules engine, no DOM dependency
+sync-cards.mjs   pulls cards from the Riftcodex API
+sync-prices.mjs  pulls market prices from TCGplayer
 data/cards.js    generated — loaded by index.html (window.RIFTBOUND_DATA)
-data/cards.json  generated — same payload, for any other tooling (git-ignored)
+data/prices.js   generated — loaded by index.html (window.RIFTBOUND_PRICES)
+data/*.json      generated — same payloads, for other tooling (git-ignored)
 ```
 
-`data/cards.json` isn't committed; run `node sync-cards.mjs` to produce it.
+The `.json` twins aren't committed; the sync scripts produce them. Prices are
+optional — with no `data/prices.js` the app simply omits every price.
+
+`deck.js` deliberately touches no DOM, so the rules engine can be exercised
+straight from Node.
 
 ## Data source
 
@@ -101,6 +158,24 @@ is missing Vendetta and the promo sets (950 cards vs 1320), has no multi-domain
 data, and guesses at set names. Both use the same card IDs.
 
 Other options: [Scrydex](https://scrydex.com/docs/riftbound/cards) (has pricing,
-needs a key), [Piltover Archive](https://piltoverarchive.com),
+$29/mo minimum), [Piltover Archive](https://piltoverarchive.com),
 [RiftStorm](https://riftstorm.gg). Only `sync-cards.mjs` would need to change —
 the app just reads `window.RIFTBOUND_DATA`.
+
+## Price source
+
+TCGplayer market prices, in USD, matched on the `tcgplayer_id` each card already
+carries — so no fuzzy name matching and no mis-priced alternate arts. One paged
+request per 50 products covers the whole game in about 30 calls.
+
+96 Vendetta cards have no Riftcodex TCGplayer ID yet, so those fall back to a
+set + name match, accepted only when it resolves to exactly one product. Checked
+against the 1189 ID-matched cards, the name match agrees on all 1189 and
+contradicts none. Coverage is 1304 of 1320 cards; the remaining 16 are Metal
+promos with no sales history and 5 Vendetta cards not yet listed.
+
+**Cardmarket was the first choice and isn't usable.** Their official API
+[stopped accepting applications](https://help.cardmarket.com/en/cardmarket-api),
+the site itself is behind Cloudflare, and every remaining route is a paid
+third-party mirror. If you ever want EUR figures, the fix is confined to
+`sync-prices.mjs` — the app only reads `window.RIFTBOUND_PRICES`.

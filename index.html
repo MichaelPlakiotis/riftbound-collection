@@ -18,6 +18,7 @@
     </div>
 
     <div class="topbar-actions">
+      <button id="btn-deck" class="btn btn-primary" type="button">Build deck</button>
       <button id="btn-stats" class="btn" type="button" aria-expanded="false">Sets</button>
       <button id="btn-export" class="btn" type="button">Export</button>
       <button id="btn-import" class="btn" type="button">Import</button>
@@ -54,9 +55,26 @@
   <p id="empty" class="empty" hidden>No cards match these filters.</p>
 </main>
 
+<dialog id="deck-modal" class="deck-modal">
+  <header class="deck-head">
+    <div>
+      <h2 class="deck-title">Suggested deck</h2>
+      <p class="deck-sub" id="deck-sub"></p>
+    </div>
+    <div class="deck-head-actions">
+      <select id="deck-legend" class="sel" aria-label="Build around a specific Legend"></select>
+      <button id="deck-copy" class="btn" type="button">Copy list</button>
+      <button id="deck-close" class="btn btn-quiet" type="button" aria-label="Close">✕</button>
+    </div>
+  </header>
+  <div class="deck-body" id="deck-body"></div>
+</dialog>
+
 <div id="toast" class="toast" hidden></div>
 
 <script src="data/cards.js"></script>
+<script src="data/prices.js"></script>
+<script src="deck.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
