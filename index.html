@@ -17,32 +17,42 @@
       <kbd class="search-hint" aria-hidden="true">Ctrl F</kbd>
     </div>
 
+    <button id="btn-menu" class="menu-btn" type="button" aria-expanded="false"
+            aria-controls="topbar-panel" aria-label="Menu and filters">
+      <span class="menu-icon" aria-hidden="true"></span>
+      <span class="menu-badge" id="menu-badge" hidden></span>
+    </button>
+  </div>
+
+  <!-- Everything past the search box collapses behind the burger on phones;
+       on wider screens the wrapper is display:contents and lays out as before. -->
+  <div class="topbar-panel" id="topbar-panel">
     <div class="topbar-actions">
       <button id="btn-deck" class="btn btn-primary" type="button">Build deck</button>
       <button id="btn-export" class="btn" type="button">Export</button>
       <button id="btn-import" class="btn" type="button">Import</button>
       <input id="file-import" type="file" accept="application/json" hidden>
     </div>
-  </div>
 
-  <div class="statline" id="statline"></div>
+    <div class="statline" id="statline"></div>
 
-  <div class="filters">
-    <select id="f-set" class="sel"></select>
-    <select id="f-domain" class="sel"></select>
-    <select id="f-rarity" class="sel"></select>
-    <select id="f-type" class="sel"></select>
+    <div class="filters">
+      <select id="f-set" class="sel"></select>
+      <select id="f-domain" class="sel"></select>
+      <select id="f-rarity" class="sel"></select>
+      <select id="f-type" class="sel"></select>
 
-    <div class="segmented" id="f-own" role="group" aria-label="Ownership filter">
-      <button type="button" data-own="all" class="active">All</button>
-      <button type="button" data-own="owned">Owned</button>
-      <button type="button" data-own="missing">Missing</button>
-      <button type="button" data-own="wishlist">Wishlist</button>
+      <div class="segmented" id="f-own" role="group" aria-label="Ownership filter">
+        <button type="button" data-own="all" class="active">All</button>
+        <button type="button" data-own="owned">Owned</button>
+        <button type="button" data-own="missing">Missing</button>
+        <button type="button" data-own="wishlist">Wishlist</button>
+      </div>
+
+      <label class="chk"><input type="checkbox" id="f-hide-promos" checked> Hide promos</label>
+
+      <button id="btn-reset" class="btn btn-quiet" type="button">Reset</button>
     </div>
-
-    <label class="chk"><input type="checkbox" id="f-hide-promos" checked> Hide promos</label>
-
-    <button id="btn-reset" class="btn btn-quiet" type="button">Reset</button>
   </div>
 </header>
 

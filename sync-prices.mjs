@@ -20,6 +20,9 @@ const PRODUCT_LINE = 'riftbound-league-of-legends-trading-card-game';
 const PAGE_SIZE = 50;
 const PAUSE_MS = 250;
 
+// ECB reference rates via Frankfurter — no key, no rate limit, CORS-friendly.
+const FX = 'https://api.frankfurter.dev/v1/latest?base=USD&symbols=EUR,GBP';
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** One page of the product-line listing. Returns { total, items }. */
@@ -64,6 +67,29 @@ async function fetchPage(from, attempt = 1) {
     if (attempt >= 4) throw new Error(`page from=${from} failed: ${err.message}`);
     await sleep(600 * attempt);
     return fetchPage(from, attempt + 1);
+  }
+}
+
+/**
+ * USD→EUR/GBP, so the app can show collection worth in a local currency. The
+ * rate is baked in here rather than fetched by the page: the site stays static,
+ * works offline, and everyone looking at the same sync sees the same number.
+ * Returns null if the rate can't be had — the app then offers dollars only.
+ */
+async function fetchRates() {
+  try {
+    const res = await fetch(FX, { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    const rates = {};
+    for (const [code, v] of Object.entries(json.rates || {})) {
+      if (typeof v === 'number' && v > 0) rates[code] = Math.round(v * 1e4) / 1e4;
+    }
+    if (!Object.keys(rates).length) throw new Error('no rates in response');
+    return { rates, ratesDate: json.date || today() };
+  } catch (err) {
+    console.warn(`  exchange rates unavailable (${err.message})`);
+    return null;
   }
 }
 
@@ -172,6 +198,15 @@ async function main() {
     prices[card.id] = entry;
   }
 
+  console.log('Fetching exchange rates…');
+  // A rate from the last sync beats no rate at all — the conversion is labelled
+  // with its own date in the UI, so a stale one is visible rather than silent.
+  const fx =
+    (await fetchRates()) ??
+    (previous?.meta?.rates
+      ? { rates: previous.meta.rates, ratesDate: previous.meta.ratesDate }
+      : null);
+
   const values = Object.values(prices).map((p) => p.m);
   const meta = {
     source: 'TCGplayer',
@@ -181,6 +216,7 @@ async function main() {
     previousSync: prevDate,
     priced: matched,
     unpriced: unmatched,
+    ...(fx || {}),
   };
 
   const payload = { meta, prices };
@@ -203,6 +239,11 @@ async function main() {
   console.log(`Median   $${values.sort((a, b) => a - b)[Math.floor(values.length / 2)]?.toFixed(2)}`);
   console.log(`Max      $${Math.max(...values).toFixed(2)}`);
   console.log(`One of each would cost $${sum.toFixed(2)}`);
+  console.log(
+    `Rates    ${
+      fx ? `${Object.entries(fx.rates).map(([c, r]) => `${c} ${r}`).join(', ')} (${fx.ratesDate})` : 'none — USD only'
+    }`
+  );
   console.log('\nWrote data/prices.js + data/prices.json');
 }
 

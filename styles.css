@@ -48,14 +48,19 @@ button, input, select { font: inherit; color: inherit; }
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--line);
   padding: 12px 20px 10px;
-}
 
-.topbar-row {
+  /* Wide layout: brand, search and actions share the first line, then the stat
+     line and filters each claim one of their own. The two wrappers are
+     display:contents here so the markup can fold into a dropdown on phones
+     without moving anything in the DOM. */
   display: flex;
   align-items: center;
-  gap: 16px;
   flex-wrap: wrap;
+  gap: 10px 16px;
 }
+
+.topbar-row,
+.topbar-panel { display: contents; }
 
 .brand {
   margin: 0;
@@ -101,7 +106,68 @@ button, input, select { font: inherit; color: inherit; }
 }
 #search:focus ~ .search-hint { opacity: 0; }
 
-.topbar-actions { display: flex; gap: 8px; }
+.topbar-actions { display: flex; gap: 8px; flex: none; }
+
+/* ---------- burger (narrow layout only) ---------- */
+
+.menu-btn {
+  display: none;
+  position: relative;
+  flex: none;
+  width: 42px;
+  height: 36px;
+  place-items: center;
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.menu-btn:hover { border-color: var(--accent-dim); }
+.menu-btn[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+
+.menu-icon,
+.menu-icon::before,
+.menu-icon::after {
+  display: block;
+  width: 18px;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+}
+.menu-icon { position: relative; }
+.menu-icon::before,
+.menu-icon::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  transition: transform .18s ease;
+}
+.menu-icon::before { top: -6px; }
+.menu-icon::after { top: 6px; }
+
+/* Open state turns the bars into an ✕ so the button reads as a close control. */
+.menu-btn[aria-expanded="true"] .menu-icon { background: transparent; }
+.menu-btn[aria-expanded="true"] .menu-icon::before { transform: translateY(6px) rotate(45deg); }
+.menu-btn[aria-expanded="true"] .menu-icon::after { transform: translateY(-6px) rotate(-45deg); }
+
+/* How many filters are in play. Without it a filtered grid looks like a bug,
+   since the controls that caused it are hidden behind the button. */
+.menu-badge {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #14181d;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
 
 .btn {
   padding: 7px 14px;
@@ -117,7 +183,7 @@ button, input, select { font: inherit; color: inherit; }
 /* ---------- stat line ---------- */
 
 .statline {
-  margin-top: 10px;
+  flex-basis: 100%;
   font-size: 13px;
   color: var(--text-dim);
   display: flex;
@@ -130,7 +196,7 @@ button, input, select { font: inherit; color: inherit; }
 /* ---------- filters ---------- */
 
 .filters {
-  margin-top: 10px;
+  flex-basis: 100%;
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
@@ -431,6 +497,16 @@ main { padding: 16px 20px 60px; }
   line-height: 1.1;
 }
 
+/* Currency picker — sits beside the worth figure and is deliberately quiet, so
+   it reads as a unit attached to that number rather than as another filter. */
+.sel-cur {
+  padding: 4px 9px;
+  font-size: 12px;
+  color: var(--text-dim);
+  letter-spacing: .04em;
+}
+.sel-cur:hover { color: var(--text); border-color: var(--accent-dim); }
+
 .value-panel {
   grid-column: 1 / -1;
   display: grid;
@@ -691,11 +767,71 @@ main { padding: 16px 20px 60px; }
   font-size: 14px;
 }
 
+/* ---------- narrow layout: header collapses to a burger ---------- */
+
+/* Kicks in above the phone breakpoint — the filter row alone needs ~700px
+   before it stops wrapping into three lines and eating the first screen. */
+@media (max-width: 760px) {
+  .topbar { display: block; padding: 8px 12px; }
+
+  .topbar-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .menu-btn { display: grid; }
+  .brand span { display: none; }
+  .search-wrap { min-width: 0; }
+
+  /* A real dropdown: it floats over the grid rather than pushing it down, so
+     the cards behind it keep their position while you set a filter. */
+  .topbar-panel {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    padding: 12px;
+    /* Opaque, not the header's translucent fill — card art showing through a
+       menu that sits on top of the grid is unreadable. */
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
+    box-shadow: 0 16px 30px rgba(0, 0, 0, .5);
+    max-height: calc(100dvh - 56px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .topbar-panel.is-open { display: block; }
+
+  .topbar-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .topbar-actions .btn { padding: 9px 14px; text-align: center; }
+  .topbar-actions .btn-primary { grid-column: 1 / -1; }
+
+  .statline {
+    gap: 8px 16px;
+    padding: 12px 0;
+    margin: 12px 0;
+    border-top: 1px solid var(--line-soft);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  /* Worth reads as its own menu row here, with the caret parked on the right. */
+  .stat-value { width: 100%; align-items: center; padding: 7px 12px; }
+  .stat-value .stat-caret { margin-left: auto; }
+  .stat-value-num { font-size: 17px; }
+  .sel-cur { padding: 7px 10px; font-size: 13px; }
+
+  .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .filters .sel { width: 100%; padding: 9px 10px; }
+  .segmented { grid-column: 1 / -1; }
+  .segmented button { flex: 1; padding: 8px 4px; }
+  .chk { padding-left: 2px; }
+  #btn-reset { padding: 8px 14px; }
+}
+
 @media (max-width: 600px) {
   /* no Ctrl key to press on a phone */
   .search-hint { display: none; }
   #search { padding-right: 12px; }
-  .topbar { padding: 10px 12px; }
   main { padding: 12px 12px 40px; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
   .brand { font-size: 15px; }

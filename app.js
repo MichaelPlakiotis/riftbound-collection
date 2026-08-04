@@ -22,9 +22,6 @@ const PRICE_META = PRICE_DATA?.meta || null;
 const priceOf = (id) => (typeof PRICES[id]?.m === 'number' ? PRICES[id].m : null);
 const prevPriceOf = (id) => (typeof PRICES[id]?.p === 'number' ? PRICES[id].p : null);
 
-const money = (n) =>
-  n >= 1000 ? `$${Math.round(n).toLocaleString('en-US')}` : `$${n.toFixed(2)}`;
-
 // Promo sets (organized play, judge, general promos) aren't part of normal set
 // completion, so they're excluded from the denominator and hidden by default.
 const PROMO_SETS = new Set(META.sets.filter((s) => s.promo).map((s) => s.id));
@@ -61,7 +58,7 @@ function save() {
 const prefs = loadPrefs();
 
 function loadPrefs() {
-  const defaults = { showDetails: false };
+  const defaults = { showDetails: false, currency: 'USD' };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
     return raw ? { ...defaults, ...JSON.parse(raw) } : defaults;
@@ -76,6 +73,39 @@ function savePrefs() {
   } catch {
     /* preferences are cosmetic — a full quota shouldn't interrupt anything */
   }
+}
+
+/* ---------------- currency ---------------- */
+
+/**
+ * Every price in the data file is a TCGplayer market price in US dollars.
+ * sync-prices.mjs bakes a USD→EUR/GBP rate into the price meta, so a reader can
+ * see the worth in their own money without the page calling out to anything.
+ * Converted figures are still US market prices — they are not Cardmarket, which
+ * is a genuinely different market. The UI labels the rate and its date.
+ */
+const RATES = { USD: 1, ...(PRICE_META?.rates || {}) };
+const CURRENCIES = { USD: '$', EUR: '€', GBP: '£' };
+const CURRENCY_CODES = Object.keys(CURRENCIES).filter((c) => RATES[c] > 0);
+
+let currency = CURRENCY_CODES.includes(prefs.currency) ? prefs.currency : 'USD';
+
+// Formatters are cached: money() runs once per card per render, and rebuilding
+// an Intl.NumberFormat 1300 times shows up on every keystroke in the search box.
+const fmtCache = {};
+const fmt = (code, decimals) =>
+  (fmtCache[`${code}${decimals}`] ||= new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: code,
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  }));
+
+/** Formats a USD figure in whichever currency is selected. */
+function money(usd) {
+  const v = usd * RATES[currency];
+  // Past a thousand the cents are noise on a figure that moves daily.
+  return fmt(currency, v >= 1000 ? 0 : 2).format(v);
 }
 
 const qtyOf = (id) => collection[id]?.q || 0;
@@ -214,6 +244,7 @@ function render() {
   el('result-count').textContent =
     `${list.length} card${list.length === 1 ? '' : 's'} shown`;
   renderStats();
+  updateFilterBadge();
 }
 
 /** Refresh one tile in place so the grid doesn't jump while you tap +/−. */
@@ -309,8 +340,23 @@ function renderStats() {
          <span class="stat-caret" aria-hidden="true">${open ? '▴' : '▾'}</span>
        </button>`;
 
+  // Only worth offering when the price file carries a rate to convert with.
+  const currencyHTML =
+    CURRENCY_CODES.length > 1
+      ? `<select id="cur-sel" class="sel sel-cur" aria-label="Display currency"
+            title="Prices come from TCGplayer in US dollars${
+              PRICE_META.ratesDate
+                ? `. Other currencies are converted at the rate of ${esc(PRICE_META.ratesDate)}, not sourced from a European marketplace`
+                : ''
+            }">${CURRENCY_CODES.map(
+              (c) =>
+                `<option value="${c}"${c === currency ? ' selected' : ''}>${c} ${CURRENCIES[c]}</option>`
+            ).join('')}</select>`
+      : '';
+
   el('statline').innerHTML =
     toggleHTML +
+    currencyHTML +
     `<span><b>${uniqueOwned}</b> / ${COLLECTABLE.length} unique <span class="pct">(${pct}%)</span></span>` +
     `<span><b>${totalCopies}</b> total copies</span>` +
     `<span><b>${wishCount}</b> on wishlist</span>`;
@@ -383,7 +429,13 @@ function valuePanelHTML(val) {
           ${val.priced.toLocaleString('en-US')} copies priced${
             val.unpriced ? ` · ${val.unpriced} with no sales data` : ''
           }<br>
-          TCGplayer market, ${esc(PRICE_META.synced)}
+          TCGplayer market, ${esc(PRICE_META.synced)}${
+            currency === 'USD'
+              ? ''
+              : `<br>Converted from USD at ${RATES[currency]} ${esc(currency)}/USD${
+                  PRICE_META.ratesDate ? `, ${esc(PRICE_META.ratesDate)}` : ''
+                }`
+          }
         </span>
       </div>
       ${
@@ -491,9 +543,66 @@ el('statline').addEventListener('click', (e) => {
   savePrefs();
   renderStats();
   if (prefs.showDetails) {
+    // The dropdown sits on top of the panel it just opened, so get out of the way.
+    setMenu(false);
     el('stats-panel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 });
+
+// Every card carries a price, so a currency change is a full re-render, not
+// just a header repaint. The select is rebuilt with the statline, hence delegation.
+el('statline').addEventListener('change', (e) => {
+  if (e.target.id !== 'cur-sel') return;
+  currency = e.target.value;
+  prefs.currency = currency;
+  savePrefs();
+  render();
+});
+
+/* ---------------- burger menu (narrow layout) ---------------- */
+
+const menuBtn = el('btn-menu');
+const topPanel = el('topbar-panel');
+const wideLayout = window.matchMedia('(min-width: 761px)');
+
+const menuOpen = () => topPanel.classList.contains('is-open');
+
+function setMenu(open) {
+  topPanel.classList.toggle('is-open', open);
+  menuBtn.setAttribute('aria-expanded', String(open));
+}
+
+menuBtn.addEventListener('click', () => setMenu(!menuOpen()));
+
+// Anything outside the header dismisses it, the way a dropdown should.
+document.addEventListener('click', (e) => {
+  if (menuOpen() && !e.target.closest('.topbar')) setMenu(false);
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && menuOpen() && !deckModal.open) setMenu(false);
+});
+
+// On the wide layout the panel is always visible, so a stale open flag would
+// leave the burger claiming to be expanded once you rotate or resize.
+wideLayout.addEventListener('change', (e) => {
+  if (e.matches) setMenu(false);
+});
+
+/**
+ * How many filters are narrowing the grid. The search box stays visible when
+ * the menu is shut, so it isn't counted — everything hidden behind the burger is.
+ */
+function updateFilterBadge() {
+  const n =
+    [state.set, state.domain, state.rarity, state.type].filter(Boolean).length +
+    (state.own === 'all' ? 0 : 1) +
+    (state.hidePromos ? 0 : 1);
+
+  const badge = el('menu-badge');
+  badge.textContent = n;
+  badge.hidden = n === 0;
+}
 
 // Set rows double as a filter — clicking one narrows the grid to that set,
 // clicking the active one goes back to everything.
@@ -692,6 +801,7 @@ function buildDeck(legendId = null) {
 }
 
 el('btn-deck').addEventListener('click', () => {
+  setMenu(false);
   buildDeck();
   deckModal.showModal();
 });

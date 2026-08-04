@@ -32,8 +32,17 @@ No server, no build step, no install — opening `index.html` locally works too.
   shelf. Open or closed is remembered under `riftbound-prefs-v1`, kept separate
   from the collection so exports stay portable. Without a price sync the chip
   reads "Set progress" and opens the same panel minus the money.
+- **Currency** — the dropdown beside the worth switches every figure in the app
+  between USD, EUR and GBP, and is remembered with the other preferences. Read
+  the caveat under [Currency](#currency): these are US market prices converted at
+  a stored rate, not Cardmarket prices.
 - **Set rows are also filters** — click one to narrow the grid to that set, click
   it again for everything. It drives the same filter as the set dropdown.
+- **On narrow screens** (≤760px) everything except the brand and the search box
+  folds behind a burger button, which opens as a dropdown over the grid — the
+  full header was costing a phone most of its first screen of cards. The button
+  carries a count of the filters currently applied, so a narrowed grid is never
+  a mystery while the controls that caused it are out of sight.
 - **Prices** — market price under each card, the value of your stack once you own
   more than one, and the move since the last sync. A move has to clear both 3%
   and 5¢ to show, otherwise a penny of rounding on a 5¢ common reads as ±20%.
@@ -220,5 +229,20 @@ promos with no sales history and 5 Vendetta cards not yet listed.
 **Cardmarket was the first choice and isn't usable.** Their official API
 [stopped accepting applications](https://help.cardmarket.com/en/cardmarket-api),
 the site itself is behind Cloudflare, and every remaining route is a paid
-third-party mirror. If you ever want EUR figures, the fix is confined to
-`sync-prices.mjs` — the app only reads `window.RIFTBOUND_PRICES`.
+third-party mirror. If you ever want true EU market figures, the fix is confined
+to `sync-prices.mjs` — the app only reads `window.RIFTBOUND_PRICES`.
+
+### Currency
+
+`sync-prices.mjs` also pulls the ECB reference rate from
+[Frankfurter](https://frankfurter.dev) and stores `meta.rates` alongside the
+prices, so the page can show €/£ without calling out to anything at runtime —
+it stays static, works offline, and everyone reading the same sync sees the same
+figure. If the rate call fails the previous sync's rate is carried forward, and
+if there has never been one the app simply offers dollars only.
+
+Note what the conversion is and isn't: it's a **US market price expressed in
+euros**, not a European market price. Cardmarket and TCGplayer genuinely differ
+per card, so a converted figure is the right number for "what is my collection
+worth" and the wrong one for "what will this cost me on Cardmarket". The picker's
+tooltip and the breakdown panel both name the rate and its date.
