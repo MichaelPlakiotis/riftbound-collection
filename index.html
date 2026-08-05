@@ -28,6 +28,7 @@
        on wider screens the wrapper is display:contents and lays out as before. -->
   <div class="topbar-panel" id="topbar-panel">
     <div class="topbar-actions">
+      <button id="btn-pack" class="btn btn-pack" type="button">Open a pack</button>
       <button id="btn-deck" class="btn btn-primary" type="button">Build deck</button>
       <button id="btn-export" class="btn" type="button">Export</button>
       <button id="btn-import" class="btn" type="button">Import</button>
@@ -80,11 +81,26 @@
   <div class="deck-body" id="deck-body"></div>
 </dialog>
 
+<!-- The pack simulator draws, shows and drops a pack; nothing it opens is saved,
+     so it owns no state beyond the phase the stage is currently rendering. -->
+<dialog id="pack-modal" class="pack-modal">
+  <div class="pack-bar">
+    <h2 class="pack-title" id="pack-title">Open a pack</h2>
+    <div class="pack-bar-actions">
+      <button id="pack-mute" class="icon-btn" type="button" aria-pressed="false"
+              title="Mute pack sounds">🔊</button>
+      <button id="pack-close" class="icon-btn" type="button" aria-label="Close">✕</button>
+    </div>
+  </div>
+  <div class="pack-stage" id="pack-stage"></div>
+</dialog>
+
 <div id="toast" class="toast" hidden></div>
 
 <script src="data/cards.js"></script>
 <script src="data/prices.js"></script>
 <script src="deck.js"></script>
+<script src="pack.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -58,7 +58,7 @@ function save() {
 const prefs = loadPrefs();
 
 function loadPrefs() {
-  const defaults = { showDetails: false, currency: 'USD', sort: '' };
+  const defaults = { showDetails: false, currency: 'USD', sort: '', packMuted: false };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
     return raw ? { ...defaults, ...JSON.parse(raw) } : defaults;
@@ -559,8 +559,8 @@ el('search').addEventListener('input', (e) => {
 // find bar only sees the cards already in the DOM. Escape gives a way back out.
 document.addEventListener('keydown', (e) => {
   const search = el('search');
-  // The deck dialog traps focus; leave the browser's own find bar alone there.
-  if (deckModal.open) return;
+  // The dialogs trap focus; leave the browser's own find bar alone in there.
+  if (deckModal.open || packModal.open) return;
 
   if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key?.toLowerCase() === 'f') {
     e.preventDefault();
@@ -670,7 +670,7 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && menuOpen() && !deckModal.open) setMenu(false);
+  if (e.key === 'Escape' && menuOpen() && !deckModal.open && !packModal.open) setMenu(false);
 });
 
 // On the wide layout the panel is always visible, so a stale open flag would
@@ -925,6 +925,464 @@ deckModal.addEventListener('click', (e) => {
   if (e.target === deckModal) deckModal.close();
 });
 
+/* ---------------- pack simulator ---------------- */
+
+const PACK = window.RiftboundPack;
+const packModal = el('pack-modal');
+const packStage = el('pack-stage');
+const PACK_SETS = PACK.openableSets(CARDS, META.sets);
+
+/**
+ * A pack is drawn, shown and dropped. Nothing it opens reaches the collection or
+ * localStorage — the tally below lives in memory for the length of the visit so
+ * the summary can put what you actually hit next to what the odds say, and a
+ * reload wipes it. The odds themselves are the only lasting thing here, and
+ * they're derived from the slot table rather than recorded.
+ */
+const packRun = { opened: 0, hits: {}, cards: 0 };
+
+let packPhase = 'choose';
+let packSetId = null;
+let currentPack = null;
+let packAt = -1;
+
+/* --- sound. No binary assets and no network calls, so every effect is built
+   out of oscillators and a noise buffer at the moment it plays. --- */
+
+let actx = null;
+
+/** Returns null when muted or unsupported, which every caller treats as silence. */
+function audio() {
+  if (prefs.packMuted) return null;
+  const Ctor = window.AudioContext || window.webkitAudioContext;
+  if (!Ctor) return null;
+  // Constructed on the click that opens the modal — browsers refuse a context
+  // that isn't traceable to a gesture, and a suspended one has to be resumed.
+  actx ||= new Ctor();
+  if (actx.state === 'suspended') actx.resume();
+  return actx;
+}
+
+function tone(ctx, { freq, at = 0, dur = 0.3, type = 'triangle', gain = 0.16, to }) {
+  const t0 = ctx.currentTime + at;
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  if (to) osc.frequency.exponentialRampToValueAtTime(to, t0 + dur);
+  // Ramps are exponential, which can't reach or start from a true zero.
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(gain, t0 + 0.014);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(g).connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + dur + 0.03);
+}
+
+/** Filtered noise — the tearing foil, and the little click on a card turning. */
+function noise(ctx, { at = 0, dur = 0.5, gain = 0.22, from = 2600, to = 400, q = 0.7 }) {
+  const t0 = ctx.currentTime + at;
+  const n = Math.max(1, Math.floor(ctx.sampleRate * dur));
+  const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / n);
+
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.Q.value = q;
+  filter.frequency.setValueAtTime(from, t0);
+  filter.frequency.exponentialRampToValueAtTime(to, t0 + dur);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(gain, t0);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+
+  src.connect(filter).connect(g).connect(ctx.destination);
+  src.start(t0);
+}
+
+const sfx = {
+  rip() {
+    const ctx = audio();
+    if (!ctx) return;
+    noise(ctx, { dur: 0.55, gain: 0.3, from: 5200, to: 600, q: 0.5 });
+    noise(ctx, { at: 0.1, dur: 0.4, gain: 0.16, from: 1800, to: 200 });
+    tone(ctx, { freq: 180, to: 60, dur: 0.5, type: 'sine', gain: 0.14 });
+  },
+  flip() {
+    const ctx = audio();
+    if (!ctx) return;
+    noise(ctx, { dur: 0.09, gain: 0.09, from: 4000, to: 1400, q: 1.2 });
+  },
+  /** The payoff. Each tier gets a longer, brighter arpeggio than the last. */
+  hit(rarity) {
+    const ctx = audio();
+    if (!ctx) return;
+    const notes = {
+      rare: [659.25, 987.77],
+      epic: [523.25, 659.25, 783.99, 1046.5],
+      showcase: [523.25, 659.25, 783.99, 1046.5, 1318.5],
+    }[rarity];
+    if (!notes) return;
+
+    const step = rarity === 'rare' ? 0.075 : 0.09;
+    notes.forEach((f, i) =>
+      tone(ctx, { freq: f, at: i * step, dur: 0.5, gain: 0.15, type: 'triangle' })
+    );
+    if (rarity === 'rare') return;
+
+    // A held fifth under the run, and a shimmer on top of the best pulls.
+    tone(ctx, { freq: 261.63, dur: 0.9, gain: 0.1, type: 'sine' });
+    tone(ctx, {
+      freq: notes[notes.length - 1] * 2,
+      at: notes.length * step,
+      dur: 1.1,
+      gain: 0.07,
+      type: 'sine',
+    });
+    if (rarity === 'showcase') {
+      tone(ctx, { freq: 130.81, dur: 1.3, gain: 0.12, type: 'sine' });
+    }
+  },
+};
+
+/* --- stage --- */
+
+const HYPE = new Set(['rare', 'epic', 'showcase']);
+const pctText = (p) => (p >= 0.995 ? '~100%' : `${(p * 100).toFixed(p < 0.1 ? 1 : 0)}%`);
+
+/** "1 in 1 packs" is nonsense, so the near-certain rarities get words instead. */
+function oneIn(p) {
+  if (p >= 0.995) return 'every pack';
+  if (p >= 0.9) return 'almost every pack';
+  return `1 in ${Math.round(1 / p)} packs`;
+}
+
+function packSetName(id) {
+  return META.sets.find((s) => s.id === id)?.name || id;
+}
+
+/** Phase one: which set are we opening. */
+function renderPackChoose() {
+  const tiles = PACK_SETS.map((s) => {
+    const odds = PACK.odds(CARDS, s.id);
+    const inSet = CARDS.filter((c) => c.set_id === s.id).length;
+    return `
+      <button class="pack-pick" type="button" data-set="${esc(s.id)}">
+        <span class="pack-mini" aria-hidden="true"><b>${esc(s.id)}</b></span>
+        <span class="pack-pick-body">
+          <span class="pack-pick-name">${esc(s.name)}</span>
+          <span class="pack-pick-meta">${inSet} cards · released ${esc(s.released)}</span>
+          <span class="pack-pick-odds">Epic ${oneIn(odds.epic)}${
+            odds.showcase ? ` · Showcase ${oneIn(odds.showcase)}` : ''
+          }</span>
+        </span>
+      </button>`;
+  }).join('');
+
+  packStage.innerHTML = `
+    <div class="pack-choose">
+      <p class="pack-lede">Pick a set. Packs follow the printed configuration —
+        7 commons, 3 uncommons, 2 rare-or-better foils, 1 wildcard foil and a rune.</p>
+      <div class="pack-picks">${tiles}</div>
+      <p class="pack-note">Nothing you open is added to your collection or saved
+        anywhere. Only the odds outlast the pack.</p>
+    </div>`;
+}
+
+/** Phase two: the sealed wrapper, waiting to be torn. */
+function renderPackSealed() {
+  const name = packSetName(packSetId);
+  packStage.innerHTML = `
+    <div class="pack-sealed">
+      <button class="booster" type="button" id="booster" aria-label="Tear open the pack">
+        ${['top', 'bottom']
+          .map(
+            (half) => `
+          <span class="booster-piece ${half}">
+            <span class="booster-art">
+              <span class="booster-brand">Riftbound</span>
+              <span class="booster-set">${esc(name)}</span>
+              <span class="booster-rune" aria-hidden="true"></span>
+              <span class="booster-foot">Booster Pack</span>
+            </span>
+          </span>`
+          )
+          .join('')}
+        <span class="booster-shine" aria-hidden="true"></span>
+        ${Array.from({ length: 14 }, (_, i) => `<span class="shard s${i}"></span>`).join('')}
+      </button>
+      <p class="pack-hint">Tap the pack to rip it open</p>
+    </div>`;
+}
+
+/** The hero card for the reveal, built fresh each time so the flip re-runs. */
+function revealCardHTML(pull, i) {
+  const c = pull.card;
+  const p = priceOf(c.id);
+  const hype = HYPE.has(c.rarity);
+  const num = String(c.collector_number).padStart(3, '0') + (c.variant || '');
+
+  return `
+    <div class="reveal-card r-${esc(c.rarity)}${hype ? ' is-hype' : ''}" data-i="${i}">
+      <div class="reveal-flip">
+        <div class="reveal-face back" aria-hidden="true"><span class="back-rune"></span></div>
+        <div class="reveal-face front">
+          <img src="${esc(c.image || '')}" alt="${esc(c.name)}" decoding="async">
+        </div>
+      </div>
+      <div class="reveal-info">
+        <span class="reveal-rarity">${esc(c.rarity)}</span>
+        <span class="reveal-name">${esc(c.name)}</span>
+        <span class="reveal-sub">${esc(c.set_id)}-${esc(num)} · ${esc(pull.slot)} slot${
+          p == null ? '' : ` · <b>${money(p)}</b>`
+        }</span>
+      </div>
+      ${hype ? '<div class="burst" aria-hidden="true"></div>' : ''}
+    </div>`;
+}
+
+function renderPackReveal() {
+  packStage.innerHTML = `
+    <div class="pack-reveal" id="pack-reveal">
+      <div class="reveal-slot" id="reveal-slot"></div>
+      <div class="reveal-strip" id="reveal-strip"></div>
+      <div class="reveal-foot">
+        <span class="reveal-count" id="reveal-count"></span>
+        <p class="pack-hint">Click, tap or press <kbd>Space</kbd> for the next card</p>
+        <button class="btn btn-quiet" type="button" data-act="reveal-all">Reveal all</button>
+      </div>
+    </div>`;
+  advanceReveal();
+}
+
+/** Turns over the next card, or moves to the summary once the pack is spent. */
+function advanceReveal() {
+  if (!currentPack) return;
+  if (packAt >= currentPack.cards.length - 1) {
+    showPackSummary();
+    return;
+  }
+
+  packAt++;
+  const pull = currentPack.cards[packAt];
+  const slot = el('reveal-slot');
+  slot.innerHTML = revealCardHTML(pull, packAt);
+  el('reveal-count').textContent = `${packAt + 1} / ${currentPack.cards.length}`;
+
+  const node = slot.firstElementChild;
+  // The card mounts face-down; flipping on the next frame is what makes the
+  // transition run at all, and it's the beat the sound has to land on.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      node.classList.add('is-open');
+      if (HYPE.has(pull.card.rarity)) sfx.hit(pull.card.rarity);
+      else sfx.flip();
+    });
+  });
+
+  const strip = el('reveal-strip');
+  strip.insertAdjacentHTML(
+    'beforeend',
+    `<span class="strip-dot r-${esc(pull.card.rarity)}" title="${esc(pull.card.name)}"></span>`
+  );
+}
+
+function revealAll() {
+  if (!currentPack) return;
+  const best = currentPack.cards
+    .slice(packAt + 1)
+    .map((p) => p.card.rarity)
+    .filter((r) => HYPE.has(r))
+    .sort((a, b) => PACK.LADDER.indexOf(b) - PACK.LADDER.indexOf(a))[0];
+  if (best) sfx.hit(best);
+  packAt = currentPack.cards.length - 1;
+  showPackSummary();
+}
+
+function showPackSummary() {
+  packPhase = 'summary';
+  const odds = PACK.odds(CARDS, packSetId);
+  const counts = currentPack.counts;
+
+  // Counted here rather than at open time so "Reveal all" and a walked-through
+  // pack tally identically, and an abandoned pack doesn't count at all.
+  packRun.opened++;
+  packRun.cards += currentPack.cards.length;
+  for (const [r, n] of Object.entries(counts)) packRun.hits[r] = (packRun.hits[r] || 0) + n;
+
+  const value = PRICE_DATA
+    ? currentPack.cards.reduce((n, p) => n + (priceOf(p.card.id) || 0), 0)
+    : null;
+
+  const cards = currentPack.cards
+    .map(
+      (p) => `
+      <figure class="sum-card r-${esc(p.card.rarity)}">
+        <img src="${esc(p.card.image || '')}" alt="${esc(p.card.name)}" loading="lazy">
+        <figcaption>${esc(p.card.name)}</figcaption>
+      </figure>`
+    )
+    .join('');
+
+  // The one number worth keeping: what the slot table pays out, per rarity.
+  const rows = [...PACK.LADDER]
+    .reverse()
+    .filter((r) => odds[r] != null)
+    .map((r) => {
+      const got = counts[r] || 0;
+      const seen = packRun.hits[r] || 0;
+      return `
+        <tr${got ? ' class="is-hit"' : ''}>
+          <th><span class="dot r-${esc(r)}"></span>${esc(titleCase(r))}</th>
+          <td>${pctText(odds[r])}</td>
+          <td class="oi">${oneIn(odds[r])}</td>
+          <td>${got || '—'}</td>
+          <td class="run">${seen || '—'}</td>
+        </tr>`;
+    })
+    .join('');
+
+  const best = currentPack.cards
+    .map((p) => p.card.rarity)
+    .sort((a, b) => PACK.LADDER.indexOf(b) - PACK.LADDER.indexOf(a))[0];
+
+  packStage.innerHTML = `
+    <div class="pack-summary">
+      <div class="sum-head">
+        <span class="sum-best r-${esc(best)}">${esc(titleCase(best))} pull</span>
+        <h3>${esc(packSetName(packSetId))} — ${currentPack.cards.length} cards</h3>
+        ${value == null ? '' : `<span class="sum-value">${money(value)} of cardboard</span>`}
+      </div>
+
+      <div class="sum-cards">${cards}</div>
+
+      <div class="sum-odds">
+        <h4>Chance of hitting each rarity in a pack</h4>
+        <table>
+          <thead>
+            <tr><th>Rarity</th><th>Per pack</th><th class="oi">Roughly</th><th>This pack</th>
+                <th class="run">Session (${packRun.opened})</th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <p class="pack-note">Odds are computed from the slot table, not tracked.
+          The session column is counted in memory and is gone on reload — no pull
+          is written to your collection or saved anywhere.</p>
+      </div>
+
+      <div class="sum-actions">
+        <button class="btn btn-pack" type="button" data-act="again">Open another ${esc(packSetId)}</button>
+        <button class="btn" type="button" data-act="choose">Different set</button>
+        <button class="btn btn-quiet" type="button" data-act="close">Done</button>
+      </div>
+    </div>`;
+}
+
+function openPackFor(setId) {
+  packSetId = setId;
+  packPhase = 'sealed';
+  currentPack = PACK.openPack({ cards: CARDS, setId });
+  packAt = -1;
+  el('pack-title').textContent = `${packSetName(setId)} booster`;
+  renderPackSealed();
+}
+
+function packChoose() {
+  packPhase = 'choose';
+  currentPack = null;
+  packSetId = null;
+  packAt = -1;
+  el('pack-title').textContent = 'Open a pack';
+  renderPackChoose();
+}
+
+/** The tear, then the cards. The delay is the animation's own length. */
+function ripPack() {
+  if (packPhase !== 'sealed') return;
+  packPhase = 'ripping';
+  el('booster').classList.add('is-torn');
+  sfx.rip();
+  setTimeout(() => {
+    if (packPhase !== 'ripping') return; // closed mid-tear
+    packPhase = 'reveal';
+    renderPackReveal();
+  }, 950);
+}
+
+el('btn-pack').addEventListener('click', () => {
+  setMenu(false);
+  // Touching the context inside the opening gesture keeps later sounds allowed.
+  audio();
+  if (!PACK_SETS.length) {
+    toast('No set in the data has enough cards to fill a pack');
+    return;
+  }
+  packChoose();
+  packModal.showModal();
+});
+
+packStage.addEventListener('click', (e) => {
+  const pick = e.target.closest('.pack-pick');
+  if (pick) {
+    openPackFor(pick.dataset.set);
+    return;
+  }
+  if (e.target.closest('#booster')) {
+    ripPack();
+    return;
+  }
+
+  const act = e.target.closest('[data-act]')?.dataset.act;
+  if (act === 'reveal-all') return revealAll();
+  if (act === 'again') return openPackFor(packSetId);
+  if (act === 'choose') return packChoose();
+  if (act === 'close') return packModal.close();
+
+  // Anywhere else on the stage during the reveal turns the next card over.
+  if (packPhase === 'reveal') advanceReveal();
+});
+
+el('pack-close').addEventListener('click', () => packModal.close());
+
+el('pack-mute').addEventListener('click', () => {
+  prefs.packMuted = !prefs.packMuted;
+  savePrefs();
+  syncMuteBtn();
+});
+
+function syncMuteBtn() {
+  const btn = el('pack-mute');
+  btn.textContent = prefs.packMuted ? '🔇' : '🔊';
+  btn.setAttribute('aria-pressed', String(prefs.packMuted));
+  btn.title = prefs.packMuted ? 'Unmute pack sounds' : 'Mute pack sounds';
+}
+
+// Space and the arrows are how you'd click through a pack without a mouse.
+// Bound to the document rather than the dialog: rendering the next phase
+// discards whatever had focus, and focus lands back on <body> — outside the
+// dialog's subtree — so a listener on the modal would stop hearing keys.
+document.addEventListener('keydown', (e) => {
+  if (!packModal.open || packPhase !== 'reveal') return;
+  if (e.key !== ' ' && e.key !== 'Enter' && e.key !== 'ArrowRight') return;
+  // Buttons on the stage keep their own activation.
+  if (e.target.closest?.('button')) return;
+  e.preventDefault();
+  advanceReveal();
+});
+
+// Leaving mid-pack drops it — there's nothing to save, so nothing to warn about.
+packModal.addEventListener('close', () => {
+  packPhase = 'choose';
+  currentPack = null;
+  packStage.innerHTML = '';
+});
+
+packModal.addEventListener('click', (e) => {
+  if (e.target === packModal) packModal.close();
+});
+
 let toastTimer;
 function toast(msg) {
   const t = el('toast');
@@ -948,5 +1406,6 @@ bindSelect('f-type', 'type', 'All types', META.types);
 // before data/prices.js went missing — so fall back rather than showing nothing.
 state.sort = SORTS.some((s) => s.id === prefs.sort) ? prefs.sort : '';
 bindSort();
+syncMuteBtn();
 
 render();

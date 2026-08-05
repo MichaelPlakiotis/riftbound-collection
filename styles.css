@@ -756,6 +756,426 @@ main { padding: 16px 20px 60px; }
 .deck-empty { padding: 32px 0 8px; text-align: center; color: var(--text); font-size: 15px; }
 .deck-empty-hint { text-align: center; color: var(--text-dim); font-size: 13px; margin: 0 0 24px; }
 
+/* ---------- pack simulator ---------- */
+
+.btn-pack {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+.btn-pack:hover { border-color: var(--accent); background: rgba(200, 170, 110, .1); }
+
+/* Every rarity-tinted piece of the simulator reads its colour from here, so a
+   card, its dot in the strip and its row in the odds table always agree. */
+.r-common { --glow: var(--r-common); }
+.r-uncommon { --glow: var(--r-uncommon); }
+.r-rare { --glow: var(--r-rare); }
+.r-epic { --glow: var(--r-epic); }
+.r-showcase { --glow: var(--r-showcase); }
+
+.pack-modal {
+  width: min(880px, 94vw);
+  max-height: 92vh;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+.pack-modal[open] { display: flex; flex-direction: column; }
+.pack-modal::backdrop { background: rgba(4, 6, 10, .84); backdrop-filter: blur(4px); }
+
+.pack-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-raise);
+  flex: none;
+}
+.pack-title { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .02em; }
+.pack-bar-actions { display: flex; gap: 6px; }
+
+.icon-btn {
+  padding: 4px 9px;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.icon-btn:hover { border-color: var(--accent-dim); }
+
+.pack-stage {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 22px 20px 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pack-lede { margin: 0 0 16px; color: var(--text-dim); font-size: 13px; line-height: 1.6; }
+.pack-note {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+.pack-hint { margin: 0; font-size: 13px; color: var(--text-dim); }
+
+/* --- choosing a set --- */
+
+.pack-choose { width: 100%; max-width: 560px; }
+.pack-picks { display: grid; gap: 10px; }
+.pack-pick {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 12px;
+  text-align: left;
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color .15s, transform .15s;
+}
+.pack-pick:hover { border-color: var(--accent); transform: translateY(-1px); }
+.pack-mini {
+  flex: none;
+  width: 42px;
+  height: 60px;
+  border-radius: 5px;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  letter-spacing: .06em;
+  color: #f2e6c8;
+  background: linear-gradient(160deg, #1d2748 0%, #2c1e4a 45%, #111827 100%);
+  border: 1px solid var(--accent-dim);
+}
+.pack-pick-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pack-pick-name { font-weight: 600; }
+.pack-pick-meta { font-size: 12px; color: var(--text-dim); }
+.pack-pick-odds { font-size: 12px; color: var(--accent); }
+
+/* --- the sealed pack --- */
+
+.pack-sealed { display: flex; flex-direction: column; align-items: center; gap: 20px; }
+
+.booster {
+  position: relative;
+  width: 248px;
+  height: 348px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  transition: transform .15s;
+}
+.booster:hover { transform: translateY(-4px); }
+.booster:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; }
+
+/* The wrapper is drawn twice and clipped along one jagged line, so the two
+   halves register as a single printed pack until the tear pulls them apart. */
+.booster-piece {
+  position: absolute;
+  inset: 0;
+  transition: transform .85s cubic-bezier(.22, .8, .3, 1), opacity .85s ease-in;
+}
+.booster-piece.top {
+  clip-path: polygon(0 0, 100% 0, 100% 20%, 92% 24%, 84% 19%, 76% 24%, 68% 19%,
+    60% 24%, 52% 19%, 44% 24%, 36% 19%, 28% 24%, 20% 19%, 12% 24%, 4% 19%, 0 23%);
+}
+.booster-piece.bottom {
+  clip-path: polygon(0 23%, 4% 19%, 12% 24%, 20% 19%, 28% 24%, 36% 19%, 44% 24%,
+    52% 19%, 60% 24%, 68% 19%, 76% 24%, 84% 19%, 92% 24%, 100% 20%, 100% 100%, 0 100%);
+}
+
+.booster-art {
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  border: 1px solid var(--accent-dim);
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(200, 170, 110, .22), transparent 60%),
+    linear-gradient(160deg, #1d2748 0%, #2c1e4a 46%, #0f1622 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+.booster-brand {
+  font-size: 11px;
+  letter-spacing: .38em;
+  text-transform: uppercase;
+  color: var(--accent);
+  text-indent: .38em;
+}
+.booster-set {
+  font-size: 21px;
+  font-weight: 700;
+  text-align: center;
+  padding: 0 20px;
+  line-height: 1.25;
+}
+.booster-rune {
+  width: 66px;
+  height: 66px;
+  border: 2px solid var(--accent-dim);
+  border-radius: 12px;
+  transform: rotate(45deg);
+  position: relative;
+}
+.booster-rune::after {
+  content: '';
+  position: absolute;
+  inset: 11px;
+  border: 2px solid var(--accent);
+  border-radius: 6px;
+}
+.booster-foot {
+  font-size: 10px;
+  letter-spacing: .22em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.booster-shine {
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  pointer-events: none;
+  transition: opacity .3s;
+}
+.booster-shine::after {
+  content: '';
+  position: absolute;
+  inset: -30% -60%;
+  background: linear-gradient(100deg, transparent 38%, rgba(255, 255, 255, .16) 50%, transparent 62%);
+  animation: sheen 3.6s linear infinite;
+}
+@keyframes sheen {
+  0% { transform: translateX(-60%); }
+  100% { transform: translateX(60%); }
+}
+
+.booster.is-torn { animation: shake .3s ease-in-out; pointer-events: none; }
+.booster.is-torn .top { transform: translate(-7%, -145%) rotate(-15deg); opacity: 0; }
+.booster.is-torn .bottom { transform: translateY(12px); }
+.booster.is-torn .booster-shine { opacity: 0; }
+@keyframes shake {
+  20% { transform: translateX(-7px) rotate(-1.2deg); }
+  55% { transform: translateX(6px) rotate(1deg); }
+  80% { transform: translateX(-3px); }
+}
+
+/* Foil confetti off the tear line. */
+.shard {
+  position: absolute;
+  top: 21%;
+  left: 50%;
+  width: 7px;
+  height: 9px;
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0;
+  pointer-events: none;
+}
+.is-torn .shard { animation: fly .95s cubic-bezier(.15, .7, .4, 1) forwards; }
+@keyframes fly {
+  0% { opacity: 1; transform: translate(0, 0) rotate(0); }
+  100% { opacity: 0; transform: translate(var(--x), var(--y)) rotate(var(--r)); }
+}
+.shard.s0  { --x: -104px; --y: -96px;  --r: 260deg; }
+.shard.s1  { --x: -74px;  --y: -132px; --r: -210deg; background: #f0e2c0; }
+.shard.s2  { --x: -38px;  --y: -108px; --r: 190deg; }
+.shard.s3  { --x: -12px;  --y: -146px; --r: -320deg; background: #f0e2c0; }
+.shard.s4  { --x: 26px;   --y: -118px; --r: 240deg; }
+.shard.s5  { --x: 62px;   --y: -140px; --r: -180deg; }
+.shard.s6  { --x: 98px;   --y: -92px;  --r: 300deg; background: #f0e2c0; }
+.shard.s7  { --x: -118px; --y: -34px;  --r: -260deg; }
+.shard.s8  { --x: 116px;  --y: -28px;  --r: 210deg; }
+.shard.s9  { --x: -88px;  --y: 22px;   --r: 160deg; background: #f0e2c0; }
+.shard.s10 { --x: 84px;   --y: 30px;   --r: -190deg; }
+.shard.s11 { --x: -46px;  --y: 54px;   --r: 220deg; }
+.shard.s12 { --x: 44px;   --y: 60px;   --r: -240deg; background: #f0e2c0; }
+.shard.s13 { --x: 4px;    --y: 74px;   --r: 280deg; }
+
+/* --- revealing, one card at a time --- */
+
+.pack-reveal {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  cursor: pointer;
+}
+/* Fixed so the stage doesn't resize under the pointer between cards. */
+.reveal-slot { height: 408px; display: grid; place-items: center; width: 100%; }
+
+.reveal-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  perspective: 1200px;
+}
+
+.reveal-flip {
+  position: relative;
+  width: 236px;
+  height: 330px;
+  transform-style: preserve-3d;
+  transform: rotateY(180deg);
+  transition: transform .55s cubic-bezier(.3, .8, .3, 1), box-shadow .4s .35s;
+  border-radius: 11px;
+}
+.reveal-card.is-open .reveal-flip { transform: rotateY(0deg); }
+.reveal-card.is-open.is-hype .reveal-flip {
+  box-shadow: 0 0 0 1px var(--glow), 0 0 46px -4px var(--glow);
+}
+
+.reveal-face {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+  border-radius: 11px;
+  overflow: hidden;
+}
+.reveal-face img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.reveal-face.back {
+  transform: rotateY(180deg);
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--accent-dim);
+  background:
+    radial-gradient(90% 60% at 50% 40%, rgba(200, 170, 110, .18), transparent 65%),
+    linear-gradient(160deg, #1d2748 0%, #2c1e4a 46%, #0f1622 100%);
+}
+.back-rune {
+  width: 62px;
+  height: 62px;
+  border: 2px solid var(--accent-dim);
+  border-radius: 12px;
+  transform: rotate(45deg);
+  position: relative;
+}
+.back-rune::after {
+  content: '';
+  position: absolute;
+  inset: 10px;
+  border: 2px solid var(--accent);
+  border-radius: 6px;
+}
+
+.reveal-info { display: flex; flex-direction: column; align-items: center; gap: 3px; text-align: center; }
+.reveal-rarity {
+  font-size: 11px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--glow);
+}
+.reveal-name { font-size: 16px; font-weight: 600; }
+.reveal-sub { font-size: 12px; color: var(--text-dim); }
+.reveal-count {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  min-width: 46px;
+}
+
+/* Shockwave, timed to land as the card finishes turning over. */
+.burst {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 236px;
+  height: 330px;
+  margin-left: -118px;
+  border: 2px solid var(--glow);
+  border-radius: 11px;
+  opacity: 0;
+  pointer-events: none;
+}
+.is-open .burst { animation: burst .85s .34s ease-out forwards; }
+@keyframes burst {
+  0% { opacity: .85; transform: scale(.96); }
+  100% { opacity: 0; transform: scale(1.55); }
+}
+
+.reveal-strip { display: flex; gap: 5px; flex-wrap: wrap; justify-content: center; min-height: 12px; }
+.strip-dot { width: 8px; height: 12px; border-radius: 2px; background: var(--glow); opacity: .8; }
+
+.reveal-foot { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; }
+
+/* --- what came out --- */
+
+.pack-summary { width: 100%; display: flex; flex-direction: column; gap: 18px; }
+.sum-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.sum-head h3 { margin: 0; font-size: 16px; font-weight: 600; }
+.sum-best {
+  padding: 3px 11px;
+  border-radius: 99px;
+  border: 1px solid var(--glow);
+  color: var(--glow);
+  font-size: 11px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.sum-value { margin-left: auto; color: var(--accent); font-weight: 600; }
+
+.sum-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(86px, 1fr)); gap: 10px; }
+.sum-card { margin: 0; }
+.sum-card img {
+  width: 100%;
+  aspect-ratio: 744 / 1039;
+  object-fit: contain;
+  border-radius: 6px;
+  display: block;
+  box-shadow: 0 0 0 1px var(--glow);
+}
+.sum-card figcaption {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sum-odds h4 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+.sum-odds table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.sum-odds th, .sum-odds td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  font-weight: 400;
+}
+.sum-odds thead th { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-dim); }
+.sum-odds tbody tr { color: var(--text-dim); }
+.sum-odds tbody tr.is-hit { color: var(--text); }
+.sum-odds tbody th { display: flex; align-items: center; gap: 7px; }
+.sum-odds td { font-variant-numeric: tabular-nums; }
+.sum-odds .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--glow); }
+
+.sum-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  .booster-piece, .reveal-flip { transition-duration: .01ms; }
+  .booster-shine::after, .is-torn .shard, .is-open .burst, .booster.is-torn { animation: none; }
+  .shard { display: none; }
+}
+
 /* ---------- toast ---------- */
 
 .toast {
@@ -809,7 +1229,9 @@ main { padding: 16px 20px 60px; }
 
   .topbar-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .topbar-actions .btn { padding: 9px 14px; text-align: center; }
-  .topbar-actions .btn-primary { grid-column: 1 / -1; }
+  /* The two things you'd come here to do get a row each; export/import share one. */
+  .topbar-actions .btn-primary,
+  .topbar-actions .btn-pack { grid-column: 1 / -1; }
 
   .statline {
     gap: 8px 16px;
@@ -832,6 +1254,21 @@ main { padding: 16px 20px 60px; }
   .segmented button { flex: 1; padding: 8px 4px; }
   .chk { padding-left: 2px; }
   #btn-reset { padding: 8px 14px; }
+
+  /* The pack fills a phone screen edge to edge; the card has to leave room for
+     the name and counter under it or the reveal scrolls out of view. */
+  .pack-modal { width: 100vw; max-width: 100vw; max-height: 100dvh; height: 100dvh; border-radius: 0; }
+  .pack-stage { padding: 16px 14px 22px; }
+  .booster { width: 208px; height: 292px; }
+  .booster-set { font-size: 18px; }
+  .reveal-slot { height: 356px; }
+  .reveal-flip, .burst { width: 200px; height: 280px; }
+  .burst { margin-left: -100px; }
+  .sum-cards { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 8px; }
+  .sum-card figcaption { display: none; }
+  .sum-odds .oi { display: none; }
+  .sum-value { margin-left: 0; }
+  .sum-actions .btn { flex: 1; text-align: center; }
 }
 
 @media (max-width: 600px) {

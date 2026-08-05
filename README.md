@@ -55,10 +55,61 @@ No server, no build step, no install — opening `index.html` locally works too.
 - **Prices** — market price under each card, the value of your stack once you own
   more than one, and the move since the last sync. A move has to clear both 3%
   and 5¢ to show, otherwise a penny of rounding on a 5¢ common reads as ±20%.
+- **Open a pack** — booster simulator. Pick a set, tear the wrapper, click through
+  the cards one at a time. See below.
 - **Build deck** — generates a legal, playable deck from cards you own. See
   below.
 - **Export / Import** — JSON backup. `localStorage` is per-browser and gets
   wiped if you clear site data, so export occasionally.
+
+## Pack simulator
+
+Pick a set, tear the wrapper open, and click through the cards one at a time —
+`Space`, `Enter` or `→` work too, and **Reveal all** skips to the end. Rares,
+Epics and Showcases arrive with a glow, a shockwave and a rising chime; the
+chime is synthesised from oscillators at the moment it plays, because the site
+ships no binary assets and makes no network calls. The 🔊 button mutes it and is
+remembered.
+
+**Nothing you open is saved.** No pull touches your collection or
+`localStorage`, and the summary's session column is counted in memory and gone
+on reload. The odds are the only thing that outlives the pack — and they're
+computed from the slot table rather than recorded.
+
+### Pack contents
+
+The 14-card configuration Riot published for Origins:
+
+| Slot | Count | Contents |
+|------|-------|----------|
+| Common | 7 | |
+| Uncommon | 3 | |
+| Rare or better | 2 | foil; 85% rare, 11% epic, 4% showcase |
+| Foil | 1 | any rarity; usually common or uncommon, can upgrade |
+| Rune or token | 1 | |
+
+Riot publishes the per-*pack* rates but not the per-*slot* table behind them, so
+the slot odds above are chosen to reproduce the rates that are published: two
+rare slots at 11% and one foil slot at 4% put an Epic in
+`1 − 0.89² × 0.96 = 24%` of packs and a Showcase in `1 − 0.96² × 0.99 = 8.8%`,
+against the published [1 in 4 and 1 in 12](https://harlequinsgames.com/blogs/riftbound/riftbound-tcg-pull-rates-and-set-overview-origins-and-spiritforged).
+Verified against 20,000 simulated packs per set. The summary reports what the
+model actually does, not the target, so the figures always describe the pack you
+just watched.
+
+Sets adapt to what they printed:
+
+- **Vendetta and Unleashed** have no showcase cards in the catalogue, so that 4%
+  falls down the ladder onto Epic — a per-pack Epic rate of 31% instead of 24%.
+- **Unleashed** printed neither runes nor tokens, so its packs are 13 cards.
+- Only sets that can fill a pack from distinct cards are offered, which rules out
+  the promo sets and the 24-card Proving Grounds deck.
+
+Base slots draw plain printings only — `(Alternate Art)`, `(Signature)`,
+`(Overnumbered)` and friends live in the showcase pool, which is what a showcase
+hit *is*. Runes and the five `Token` cards are held back for the last slot;
+without that a pack could open with eight runes, or put the Recruit token in a
+slot that should hold a real card.
 
 ## Deck generator
 
@@ -181,8 +232,9 @@ The base printing always sorts first and keeps the clean ID.
 ```
 index.html       markup
 styles.css       styles
-app.js           filtering, sorting, stats, prices, persistence, export/import, deck UI
+app.js           filtering, sorting, stats, prices, persistence, export/import, deck + pack UI
 deck.js          deck generator — rules engine, no DOM dependency
+pack.js          booster pack model — slot table and draws, no DOM dependency
 sync-cards.mjs   pulls cards from the Riftcodex API
 sync-prices.mjs  pulls market prices from TCGplayer
 data/cards.js    generated — loaded by index.html (window.RIFTBOUND_DATA)
