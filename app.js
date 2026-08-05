@@ -58,7 +58,7 @@ function save() {
 const prefs = loadPrefs();
 
 function loadPrefs() {
-  const defaults = { showDetails: false, currency: 'USD' };
+  const defaults = { showDetails: false, currency: 'USD', sort: '' };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
     return raw ? { ...defaults, ...JSON.parse(raw) } : defaults;
@@ -129,6 +129,7 @@ const state = {
   type: '',
   own: 'all',
   hidePromos: true,
+  sort: '',
 };
 
 const el = (id) => document.getElementById(id);
@@ -158,6 +159,74 @@ function matches(c) {
   }
   return true;
 }
+
+/* ---------------- sorting ---------------- */
+
+/**
+ * Default order is the order sync-cards.mjs wrote — set by set, oldest first,
+ * ascending collector number — which is what the grid showed before there was
+ * anything to sort by. It doubles as the tie-breaker for every other sort, so
+ * cards sharing a price or a cost still come out in a stable, browsable order.
+ */
+const CARD_INDEX = new Map(CARDS.map((c, i) => [c.id, i]));
+const byNumber = (a, b) => CARD_INDEX.get(a.id) - CARD_INDEX.get(b.id);
+
+/**
+ * Sorts on a numeric key, `dir` being 1 for ascending. Cards without the key —
+ * no sales data, or a Rune with no energy cost — always sink to the bottom
+ * instead of piling up at the top whenever the direction flips.
+ */
+const byNumeric = (key, dir) => (a, b) => {
+  const x = key(a);
+  const y = key(b);
+  if (x == null || y == null) {
+    if (x == null && y == null) return byNumber(a, b);
+    return x == null ? 1 : -1;
+  }
+  return (x - y) * dir || byNumber(a, b);
+};
+
+const energyOf = (c) => c.stats?.energy ?? null;
+
+// Card-type order follows how the deck panel groups them, which reads far
+// better than alphabetical: the pieces you build around come first.
+const TYPE_ORDER = ['Legend', 'Unit', 'Spell', 'Gear', 'Rune', 'Battlefield'];
+const typeRank = (c) => {
+  const i = TYPE_ORDER.indexOf(c.type);
+  return i === -1 ? TYPE_ORDER.length : i;
+};
+
+/** `priced` options are dropped from the menu when no price file is loaded. */
+const SORTS = [
+  { id: '', label: 'Sort: Set order', cmp: byNumber },
+  {
+    id: 'price-desc',
+    label: 'Sort: Price high → low',
+    priced: true,
+    cmp: byNumeric((c) => priceOf(c.id), -1),
+  },
+  {
+    id: 'price-asc',
+    label: 'Sort: Price low → high',
+    priced: true,
+    cmp: byNumeric((c) => priceOf(c.id), 1),
+  },
+  { id: 'cost-asc', label: 'Sort: Cost low → high', cmp: byNumeric(energyOf, 1) },
+  { id: 'cost-desc', label: 'Sort: Cost high → low', cmp: byNumeric(energyOf, -1) },
+  {
+    id: 'type',
+    label: 'Sort: Type',
+    // Within a type the curve is the useful second axis, so group by cost too.
+    cmp: (a, b) => typeRank(a) - typeRank(b) || byNumeric(energyOf, 1)(a, b),
+  },
+  {
+    id: 'name',
+    label: 'Sort: Name A → Z',
+    cmp: (a, b) => a.name.localeCompare(b.name) || byNumber(a, b),
+  },
+].filter((s) => !s.priced || PRICE_DATA);
+
+const sortCmp = (id) => (SORTS.find((s) => s.id === id) || SORTS[0]).cmp;
 
 /* ---------------- rendering ---------------- */
 
@@ -238,7 +307,7 @@ function cardHTML(c) {
 }
 
 function render() {
-  const list = CARDS.filter(matches);
+  const list = CARDS.filter(matches).sort(sortCmp(state.sort));
   grid.innerHTML = list.map(cardHTML).join('');
   el('empty').hidden = list.length > 0;
   el('result-count').textContent =
@@ -522,6 +591,27 @@ function bindSelect(id, key, label, values, labelFn = (v) => v) {
   });
 }
 
+/**
+ * Sort order is a view preference rather than a filter, so it's remembered
+ * between visits like the currency is. It still sits in the filter bar, so
+ * Reset clears it along with everything else there.
+ */
+function bindSort() {
+  const sel = el('f-sort');
+  sel.innerHTML = SORTS.map(
+    (s) => `<option value="${esc(s.id)}"${s.id === state.sort ? ' selected' : ''}>${esc(s.label)}</option>`
+  ).join('');
+  sel.classList.toggle('is-set', !!state.sort);
+
+  sel.addEventListener('change', () => {
+    state.sort = sel.value;
+    prefs.sort = sel.value;
+    savePrefs();
+    sel.classList.toggle('is-set', !!state.sort);
+    render();
+  });
+}
+
 el('f-own').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-own]');
   if (!btn) return;
@@ -615,9 +705,12 @@ el('stats-panel').addEventListener('click', (e) => {
 });
 
 el('btn-reset').addEventListener('click', () => {
-  Object.assign(state, { q: '', set: '', domain: '', rarity: '', type: '', own: 'all' });
+  Object.assign(state, { q: '', set: '', domain: '', rarity: '', type: '', own: 'all', sort: '' });
   el('search').value = '';
-  ['f-set', 'f-domain', 'f-rarity', 'f-type'].forEach((id) => (el(id).value = ''));
+  ['f-set', 'f-domain', 'f-rarity', 'f-type', 'f-sort'].forEach((id) => (el(id).value = ''));
+  el('f-sort').classList.remove('is-set');
+  prefs.sort = '';
+  savePrefs();
   el('f-own').querySelectorAll('button').forEach((b) =>
     b.classList.toggle('active', b.dataset.own === 'all')
   );
@@ -850,5 +943,10 @@ bindSelect('f-set', 'set', 'All sets', META.sets.map((s) => s.id),
 bindSelect('f-domain', 'domain', 'All domains', META.domains, titleCase);
 bindSelect('f-rarity', 'rarity', 'All rarities', META.rarities, titleCase);
 bindSelect('f-type', 'type', 'All types', META.types);
+
+// A remembered sort can name an option that isn't offered — a price order saved
+// before data/prices.js went missing — so fall back rather than showing nothing.
+state.sort = SORTS.some((s) => s.id === prefs.sort) ? prefs.sort : '';
+bindSort();
 
 render();

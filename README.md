@@ -24,6 +24,15 @@ No server, no build step, no install — opening `index.html` locally works too.
   in Vendetta) match either one. Promo sets are hidden by default and excluded
   from the overall completion figure; picking a promo set explicitly still shows
   it.
+- **Sort** — the last dropdown in the filter bar reorders the grid: price high to
+  low or low to high, energy cost either way, by card type (Legend, Unit, Spell,
+  Gear, Rune, Battlefield — the order the deck panel groups them in, with each
+  type's own curve inside it), or name. Cards with nothing to sort on — a card
+  with no sales data, a Rune with no energy cost — always sink to the bottom
+  rather than flipping to the top when you reverse the direction. Default is the
+  order the sets were printed in, which also breaks ties everywhere else. The
+  choice is remembered with the other preferences; Reset puts it back. Price
+  orders only appear once a price sync has been run.
 - **Collection worth** — total market value of everything you own, in the header,
   and the one control for the detail panel. Click it to show or hide: the
   breakdown (what the total is made of and the cards carrying most of it) and
@@ -172,7 +181,7 @@ The base printing always sorts first and keeps the clean ID.
 ```
 index.html       markup
 styles.css       styles
-app.js           filtering, stats, prices, persistence, export/import, deck UI
+app.js           filtering, sorting, stats, prices, persistence, export/import, deck UI
 deck.js          deck generator — rules engine, no DOM dependency
 sync-cards.mjs   pulls cards from the Riftcodex API
 sync-prices.mjs  pulls market prices from TCGplayer

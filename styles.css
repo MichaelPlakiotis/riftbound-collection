@@ -213,6 +213,10 @@ button, input, select { font: inherit; color: inherit; }
 }
 .sel:focus { border-color: var(--accent-dim); }
 
+/* Sorting reorders rather than narrows, so it isn't counted by the filter
+   badge — the accent is what tells you a non-default order is in effect. */
+.sel-sort.is-set { border-color: var(--accent-dim); color: var(--accent); }
+
 .segmented {
   display: flex;
   border: 1px solid var(--line);
@@ -822,6 +826,8 @@ main { padding: 16px 20px 60px; }
 
   .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .filters .sel { width: 100%; padding: 9px 10px; }
+  /* Odd one out of the four filter selects, and its labels are the longest. */
+  .sel-sort { grid-column: 1 / -1; }
   .segmented { grid-column: 1 / -1; }
   .segmented button { flex: 1; padding: 8px 4px; }
   .chk { padding-left: 2px; }
