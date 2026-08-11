@@ -30,7 +30,29 @@
     <div class="topbar-actions">
       <button id="btn-pack" class="btn btn-pack" type="button">Open a pack</button>
       <button id="btn-deck" class="btn btn-primary" type="button">Build deck</button>
-      <button id="btn-export" class="btn" type="button">Export</button>
+      <!-- Export opens a format menu: hover on a mouse, tap on a phone. The menu
+           lives inside the wrapper so it can hang off the button on wide screens
+           and unfold in the flow inside the burger panel on narrow ones. -->
+      <div class="export-wrap" id="export-wrap">
+        <button id="btn-export" class="btn" type="button" aria-haspopup="true"
+                aria-expanded="false" aria-controls="export-menu">
+          Export <span class="caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="export-menu" id="export-menu" role="menu" aria-labelledby="btn-export">
+          <button type="button" role="menuitem" data-format="json">
+            <b>JSON</b><span>Full backup — imports back into this app</span>
+          </button>
+          <button type="button" role="menuitem" data-format="csv">
+            <b>CSV</b><span>Spreadsheets and most collection trackers</span>
+          </button>
+          <button type="button" role="menuitem" data-format="txt">
+            <b>Text</b><span>Readable list, grouped by set</span>
+          </button>
+          <button type="button" role="menuitem" data-format="tcg">
+            <b>TCGplayer mass entry</b><span>Quantity and name, one card per line</span>
+          </button>
+        </div>
+      </div>
       <button id="btn-import" class="btn" type="button">Import</button>
       <input id="file-import" type="file" accept="application/json" hidden>
     </div>

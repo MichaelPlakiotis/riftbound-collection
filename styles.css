@@ -180,6 +180,60 @@ button, input, select { font: inherit; color: inherit; }
 .btn:hover { border-color: var(--accent-dim); color: var(--accent); }
 .btn-quiet { color: var(--text-dim); }
 
+/* ---------- export format menu ---------- */
+
+.export-wrap { position: relative; }
+
+#btn-export .caret { color: var(--text-dim); font-size: 10px; }
+#btn-export[aria-expanded="true"] {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+#btn-export[aria-expanded="true"] .caret { color: inherit; }
+
+/* Hangs off the button on the wide layout; the narrow layout below turns it
+   into an inline block so it can't cover the filters behind it. */
+.export-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  width: 268px;
+  padding: 5px;
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, .45);
+}
+.export-menu.is-open { display: block; }
+
+.export-menu button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.export-menu button:hover,
+.export-menu button:focus-visible { background: var(--bg-raise); outline: none; }
+.export-menu button:hover b,
+.export-menu button:focus-visible b { color: var(--accent); }
+
+.export-menu b { display: block; font-size: 13px; font-weight: 600; }
+.export-menu span {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
 /* ---------- stat line ---------- */
 
 .statline {
@@ -1227,11 +1281,32 @@ main { padding: 16px 20px 60px; }
   }
   .topbar-panel.is-open { display: block; }
 
-  .topbar-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  /* Dense packing keeps Import beside Export when the full-width format menu
+     unfolds between them, instead of leaving a hole and a stranded button. */
+  .topbar-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; grid-auto-flow: dense; }
   .topbar-actions .btn { padding: 9px 14px; text-align: center; }
   /* The two things you'd come here to do get a row each; export/import share one. */
   .topbar-actions .btn-primary,
   .topbar-actions .btn-pack { grid-column: 1 / -1; }
+
+  /* The wrapper steps out of the way so the button keeps its half of the row
+     and the menu can claim a full-width row of its own beneath it. */
+  .export-wrap { display: contents; }
+
+  /* Inline rather than floating: a panel hanging over the header would bury the
+     stat line and filters under it. Open pushes the rest of the menu down and
+     the panel scrolls, so everything stays reachable. */
+  .export-menu {
+    position: static;
+    grid-column: 1 / -1;
+    width: auto;
+    margin-top: -2px;
+    box-shadow: none;
+    background: var(--bg-raise);
+  }
+  .export-menu button { padding: 10px 12px; }
+  .export-menu b { font-size: 14px; }
+  .export-menu span { font-size: 12px; }
 
   .statline {
     gap: 8px 16px;

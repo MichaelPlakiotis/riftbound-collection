@@ -660,6 +660,9 @@ const menuOpen = () => topPanel.classList.contains('is-open');
 function setMenu(open) {
   topPanel.classList.toggle('is-open', open);
   menuBtn.setAttribute('aria-expanded', String(open));
+  // The export menu lives inside the panel on this layout — folding the panel
+  // away with it still expanded would leave it open behind the burger.
+  if (!open) setExportMenu(false);
 }
 
 menuBtn.addEventListener('click', () => setMenu(!menuOpen()));
@@ -670,7 +673,11 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && menuOpen() && !deckModal.open && !packModal.open) setMenu(false);
+  // An open export menu takes the Escape first — one press shouldn't dismiss
+  // both it and the panel it's sitting in.
+  if (e.key === 'Escape' && menuOpen() && !exportOpen() && !deckModal.open && !packModal.open) {
+    setMenu(false);
+  }
 });
 
 // On the wide layout the panel is always visible, so a stale open flag would
@@ -719,20 +726,199 @@ el('btn-reset').addEventListener('click', () => {
 
 /* ---------------- export / import ---------------- */
 
-el('btn-export').addEventListener('click', () => {
-  const payload = {
-    app: 'riftbound-collection',
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    collection,
-  };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+/**
+ * Every saved entry paired with its card, in set then collector-number order so
+ * a text or CSV export reads like a binder rather than like localStorage.
+ * Cards that vanished from the data file are dropped — an id nothing can resolve
+ * is worse than a missing row in a file meant for another application.
+ */
+function exportRows() {
+  const byId = new Map(CARDS.map((c) => [c.id, c]));
+  return Object.entries(collection)
+    .map(([id, e]) => ({ card: byId.get(id), q: Math.max(0, e?.q | 0), w: !!e?.w }))
+    .filter((r) => r.card && (r.q > 0 || r.w))
+    .sort(
+      (a, b) =>
+        a.card.set_id.localeCompare(b.card.set_id) ||
+        a.card.collector_number - b.card.collector_number
+    );
+}
+
+const setNameOf = (id) => META.sets.find((s) => s.id === id)?.name || id;
+
+/** Card number as it's printed and as other trackers expect it: zero-padded. */
+const cardNo = (card) => String(card.collector_number).padStart(3, '0');
+
+function csvCell(v) {
+  const s = v == null ? '' : String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/**
+ * The four shapes a collection can leave here in. JSON is the round-trip format
+ * the importer reads back; the rest are one-way and shaped for other tools, so
+ * they carry printed identifiers (set + number) rather than this app's ids.
+ */
+const EXPORT_FORMATS = {
+  json: {
+    ext: 'json',
+    mime: 'application/json',
+    build: () =>
+      JSON.stringify(
+        { app: 'riftbound-collection', version: 1, exportedAt: new Date().toISOString(), collection },
+        null,
+        2
+      ),
+  },
+
+  csv: {
+    ext: 'csv',
+    mime: 'text/csv',
+    build: (rows) => {
+      // Prices follow the currency picked in the header, so the column is
+      // labelled with the code — a bare number in the wrong money is a trap.
+      const head = [
+        'Set Code', 'Set Name', 'Card Number', 'Name', 'Rarity', 'Type', 'Domains',
+        'Quantity', 'Wishlist', `Unit Price (${currency})`, `Total Price (${currency})`,
+      ];
+      const lines = rows.map((r) => {
+        const usd = priceOf(r.card.id);
+        const unit = usd == null ? '' : (usd * RATES[currency]).toFixed(2);
+        const total = usd == null ? '' : (usd * RATES[currency] * r.q).toFixed(2);
+        return [
+          r.card.set_id, setNameOf(r.card.set_id), cardNo(r.card), r.card.name,
+          r.card.rarity, r.card.type, r.card.domains.join(' / '),
+          r.q, r.w ? 'yes' : 'no', unit, total,
+        ].map(csvCell).join(',');
+      });
+      // BOM first, or Excel opens UTF-8 card names as mojibake.
+      return `﻿${[head.join(','), ...lines].join('\r\n')}\r\n`;
+    },
+  },
+
+  txt: {
+    ext: 'txt',
+    mime: 'text/plain',
+    build: (rows) => {
+      const owned = rows.filter((r) => r.q > 0);
+      const wished = rows.filter((r) => r.w);
+      const copies = owned.reduce((a, r) => a + r.q, 0);
+
+      const out = [
+        'Riftbound collection',
+        `Exported ${new Date().toISOString().slice(0, 10)}`,
+        `${owned.length} unique cards · ${copies} total copies`,
+      ];
+
+      let set = null;
+      for (const r of owned) {
+        if (r.card.set_id !== set) {
+          set = r.card.set_id;
+          out.push('', `${setNameOf(set)} (${set})`, '-'.repeat(setNameOf(set).length + set.length + 3));
+        }
+        out.push(`${r.q}x ${r.card.name} (${set} ${cardNo(r.card)})`);
+      }
+
+      if (wished.length) {
+        out.push('', 'Wishlist', '--------');
+        for (const r of wished) out.push(`${r.card.name} (${r.card.set_id} ${cardNo(r.card)})`);
+      }
+      return `${out.join('\n')}\n`;
+    },
+  },
+
+  tcg: {
+    ext: 'txt',
+    // Shares an extension with the plain list, so it earns its own file name.
+    slug: '-tcgplayer',
+    mime: 'text/plain',
+    // Mass-entry boxes take "quantity name" and nothing else — no header, and no
+    // wishlist-only rows, since a card you don't own has no quantity to enter.
+    build: (rows) =>
+      `${rows.filter((r) => r.q > 0).map((r) => `${r.q} ${r.card.name}`).join('\n')}\n`,
+  },
+};
+
+function runExport(format) {
+  const spec = EXPORT_FORMATS[format];
+  if (!spec) return;
+
+  const rows = exportRows();
+  if (!rows.length) {
+    toast('Nothing to export yet — mark some cards first');
+    return;
+  }
+
+  const text = spec.build(rows);
+  const blob = new Blob([text], { type: `${spec.mime};charset=utf-8` });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `riftbound-collection-${new Date().toISOString().slice(0, 10)}.json`;
+  const day = new Date().toISOString().slice(0, 10);
+  a.download = `riftbound-collection-${day}${spec.slug || ''}.${spec.ext}`;
   a.click();
   URL.revokeObjectURL(a.href);
-  toast('Collection exported');
+  toast(`Collection exported as ${format === 'tcg' ? 'TCGplayer list' : format.toUpperCase()}`);
+}
+
+/* ---------------- export menu ---------------- */
+
+const exportWrap = el('export-wrap');
+const exportBtn = el('btn-export');
+const exportMenu = el('export-menu');
+
+const exportOpen = () => exportMenu.classList.contains('is-open');
+
+function setExportMenu(open) {
+  exportMenu.classList.toggle('is-open', open);
+  exportBtn.setAttribute('aria-expanded', String(open));
+  // Inside the burger panel the menu unfolds in the flow, and the panel is a
+  // scroller — a long list of filters below it can leave the last formats
+  // off screen. Nothing to nudge on the wide layout, where it floats.
+  if (open && !wideLayout.matches) {
+    exportMenu.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+
+exportBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  setExportMenu(!exportOpen());
+});
+
+// Hover only where there's a real pointer: on a touch screen the first tap
+// would open the menu and the click that follows would close it again.
+const hoverPointer = window.matchMedia('(hover: hover)');
+let hoverTimer;
+
+exportWrap.addEventListener('pointerenter', (e) => {
+  if (e.pointerType !== 'mouse' || !hoverPointer.matches) return;
+  clearTimeout(hoverTimer);
+  setExportMenu(true);
+});
+
+// A short grace period, so cutting the corner between button and menu — or
+// sliding past on the way to Import — doesn't shut it in your face.
+exportWrap.addEventListener('pointerleave', (e) => {
+  if (e.pointerType !== 'mouse' || !hoverPointer.matches) return;
+  clearTimeout(hoverTimer);
+  hoverTimer = setTimeout(() => setExportMenu(false), 260);
+});
+
+exportMenu.addEventListener('click', (e) => {
+  const item = e.target.closest('[data-format]');
+  if (!item) return;
+  setExportMenu(false);
+  setMenu(false);
+  runExport(item.dataset.format);
+});
+
+document.addEventListener('click', (e) => {
+  if (exportOpen() && !e.target.closest('#export-wrap')) setExportMenu(false);
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !exportOpen()) return;
+  setExportMenu(false);
+  exportBtn.focus();
 });
 
 el('btn-import').addEventListener('click', () => el('file-import').click());

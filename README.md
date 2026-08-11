@@ -59,8 +59,20 @@ No server, no build step, no install — opening `index.html` locally works too.
   the cards one at a time. See below.
 - **Build deck** — generates a legal, playable deck from cards you own. See
   below.
-- **Export / Import** — JSON backup. `localStorage` is per-browser and gets
-  wiped if you clear site data, so export occasionally.
+- **Export / Import** — `localStorage` is per-browser and gets wiped if you clear
+  site data, so export occasionally. Export opens a format menu (hover or click,
+  and it unfolds inline inside the burger panel on a phone):
+
+  | Format | What it's for |
+  | --- | --- |
+  | **JSON** | Full backup — the only format Import reads back |
+  | **CSV** | Spreadsheets and most collection trackers. One row per card, with set code, printed number, rarity, type, domains, quantity, wishlist flag and unit/total price in the currency currently selected. UTF-8 BOM so Excel doesn't mangle card names |
+  | **Text** | Readable list grouped by set — `3x Ashe, Frost Archer (OGN 012)` — with a wishlist section at the end |
+  | **TCGplayer mass entry** | `3 Ashe, Frost Archer` lines for bulk-add boxes. Owned copies only; a wishlist card has no quantity to enter |
+
+  The three one-way formats identify cards the way they're printed (set code +
+  zero-padded collector number) rather than by this app's internal ids, which is
+  what makes them readable somewhere else. Only JSON round-trips.
 
 ## Pack simulator
 
