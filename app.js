@@ -749,15 +749,30 @@ const setNameOf = (id) => META.sets.find((s) => s.id === id)?.name || id;
 /** Card number as it's printed and as other trackers expect it: zero-padded. */
 const cardNo = (card) => String(card.collector_number).padStart(3, '0');
 
+/**
+ * The id riftbound.gg (dotgg) files cards under: set code, dash, padded number —
+ * `OGN-066`. 1171 of our 1320 cards land on one of theirs directly; the rest are
+ * looked up by name instead, which their importer falls back to on its own.
+ */
+const dotggId = (card) => `${card.set_id}-${cardNo(card)}`;
+
+/**
+ * The name without the treatment suffix we carry and other catalogues don't:
+ * riftbound.gg lists one `Ahri - Alluring`, not a separate `(Alternate Art)`
+ * printing, so the bare name is what a name lookup has to be given. Worth 27
+ * extra cards over sending ours verbatim.
+ */
+const plainName = (card) => window.RiftboundDeck.cardName(card);
+
 function csvCell(v) {
   const s = v == null ? '' : String(v);
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 /**
- * The four shapes a collection can leave here in. JSON is the round-trip format
- * the importer reads back; the rest are one-way and shaped for other tools, so
- * they carry printed identifiers (set + number) rather than this app's ids.
+ * The shapes a collection can leave here in. JSON is the round-trip format the
+ * importer reads back; the rest are one-way and shaped for other tools, so they
+ * carry printed identifiers (set + number) rather than this app's ids.
  */
 const EXPORT_FORMATS = {
   json: {
@@ -777,23 +792,47 @@ const EXPORT_FORMATS = {
     build: (rows) => {
       // Prices follow the currency picked in the header, so the column is
       // labelled with the code — a bare number in the wrong money is a trap.
+      // Name comes last on purpose: 75 of our card names contain a comma, and
+      // an importer that splits on commas instead of parsing quotes shifts every
+      // column that follows one. Last means there's nothing left to shift.
       const head = [
-        'Set Code', 'Set Name', 'Card Number', 'Name', 'Rarity', 'Type', 'Domains',
-        'Quantity', 'Wishlist', `Unit Price (${currency})`, `Total Price (${currency})`,
+        'Card ID', 'Set Code', 'Set Name', 'Card Number', 'Quantity', 'Foil', 'Wishlist',
+        'Rarity', 'Type', 'Domains', `Unit Price (${currency})`, `Total Price (${currency})`, 'Name',
       ];
       const lines = rows.map((r) => {
         const usd = priceOf(r.card.id);
         const unit = usd == null ? '' : (usd * RATES[currency]).toFixed(2);
         const total = usd == null ? '' : (usd * RATES[currency] * r.q).toFixed(2);
         return [
-          r.card.set_id, setNameOf(r.card.set_id), cardNo(r.card), r.card.name,
-          r.card.rarity, r.card.type, r.card.domains.join(' / '),
-          r.q, r.w ? 'yes' : 'no', unit, total,
+          dotggId(r.card), r.card.set_id, setNameOf(r.card.set_id), cardNo(r.card),
+          r.q, 0, r.w ? 'yes' : 'no',
+          r.card.rarity, r.card.type, r.card.domains.join(' / '), unit, total, plainName(r.card),
         ].map(csvCell).join(',');
       });
       // BOM first, or Excel opens UTF-8 card names as mojibake.
       return `﻿${[head.join(','), ...lines].join('\r\n')}\r\n`;
     },
+  },
+
+  /**
+   * riftbound.gg's importer recognises four header names and reads nothing else:
+   * `card id`, `quantity`, `foil`, `name`. It splits rows on commas without
+   * honouring quotes, so the name is parked in the last column, where a comma in
+   * it can't shift anything that matters. Nothing but their importer reads this
+   * file, so it skips the BOM the spreadsheet CSV needs.
+   */
+  rbgg: {
+    ext: 'csv',
+    slug: '-riftbound-gg',
+    mime: 'text/csv',
+    build: (rows) =>
+      `${['Card ID,Quantity,Foil,Name']
+        .concat(
+          rows
+            .filter((r) => r.q > 0) // a row at 0 is dropped on their side anyway
+            .map((r) => `${dotggId(r.card)},${r.q},0,${plainName(r.card)}`)
+        )
+        .join('\r\n')}\r\n`,
   },
 
   txt: {
@@ -839,6 +878,14 @@ const EXPORT_FORMATS = {
   },
 };
 
+const EXPORT_LABELS = {
+  json: 'JSON',
+  csv: 'CSV',
+  rbgg: 'a riftbound.gg file',
+  txt: 'a text list',
+  tcg: 'a TCGplayer list',
+};
+
 function runExport(format) {
   const spec = EXPORT_FORMATS[format];
   if (!spec) return;
@@ -857,7 +904,7 @@ function runExport(format) {
   a.download = `riftbound-collection-${day}${spec.slug || ''}.${spec.ext}`;
   a.click();
   URL.revokeObjectURL(a.href);
-  toast(`Collection exported as ${format === 'tcg' ? 'TCGplayer list' : format.toUpperCase()}`);
+  toast(`Collection exported as ${EXPORT_LABELS[format]}`);
 }
 
 /* ---------------- export menu ---------------- */

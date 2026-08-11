@@ -66,13 +66,42 @@ No server, no build step, no install — opening `index.html` locally works too.
   | Format | What it's for |
   | --- | --- |
   | **JSON** | Full backup — the only format Import reads back |
-  | **CSV** | Spreadsheets and most collection trackers. One row per card, with set code, printed number, rarity, type, domains, quantity, wishlist flag and unit/total price in the currency currently selected. UTF-8 BOM so Excel doesn't mangle card names |
+  | **CSV** | Spreadsheets and most collection trackers. One row per card: card id, set code, printed number, quantity, foil, wishlist flag, rarity, type, domains, unit/total price in the currency currently selected, and the name. UTF-8 BOM so Excel doesn't mangle card names |
+  | **riftbound.gg** | Four columns shaped for [riftbound.gg](https://riftbound.gg/collection/)'s collection importer. See below |
   | **Text** | Readable list grouped by set — `3x Ashe, Frost Archer (OGN 012)` — with a wishlist section at the end |
   | **TCGplayer mass entry** | `3 Ashe, Frost Archer` lines for bulk-add boxes. Owned copies only; a wishlist card has no quantity to enter |
 
-  The three one-way formats identify cards the way they're printed (set code +
-  zero-padded collector number) rather than by this app's internal ids, which is
-  what makes them readable somewhere else. Only JSON round-trips.
+  Everything but JSON is one-way and identifies cards the way they're printed
+  (set code + zero-padded collector number) rather than by this app's internal
+  ids, which is what makes them readable somewhere else.
+
+### Importing into riftbound.gg
+
+Their importer takes a CSV or plain text file up to 2 MB, detects the columns
+itself — there is no manual mapping step — and then lists whatever it couldn't
+recognise for you to resolve by hand. Two things about it drive the export:
+
+- **It only knows four header names**: `card id`, `quantity`, `foil`, `name`
+  (plus synonyms — `qty`, `count`, `owned`, `cardname`…). Everything else in the
+  row is ignored, and matching is an exact, case-insensitive lookup on their card
+  id or full name. No fuzzy matching.
+- **It splits rows on commas without honouring quotes.** A properly quoted
+  `"Ashe, Frost Archer"` still shifts every column after it, and if the quantity
+  column lands on text, the row parses as 0 and is dropped *silently* — not even
+  reported in the unresolved list. 75 of our card names contain a comma.
+
+So both CSV exports put the name in the **last** column, where a comma in it can
+shift nothing, and lead with a `Card ID` holding their identifier — set code, a
+dash and the padded number, `OGN-066`. Names are written without our treatment
+suffix (`(Alternate Art)`, `(Metal)`), since their catalogue lists one entry per
+collector number and a suffixed name matches nothing.
+
+Measured by running their own parser (lifted from their bundle) over an export of
+all 1320 cards: **1312 import**, and the 8 that don't are Organized Play and
+general promos their catalogue files under different codes entirely. They show up
+in their "Needs attention" list, where you can point each at the right card.
+Before this shape, the same file imported 1013 cards, dropped 75 rows without
+saying so, and put 232 in the unresolved pile.
 
 ## Pack simulator
 
