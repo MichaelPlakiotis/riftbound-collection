@@ -1,0 +1,45 @@
+# Re-runs sync-prices.mjs once a day and commits data/prices.js when the numbers
+# moved. Both hosts deploy from main, so the commit is what publishes the update.
+name: Sync prices
+
+on:
+  schedule:
+    # 09:00 UTC daily. GitHub queues scheduled jobs under load, so treat this as
+    # "some time after 09:00" rather than on the minute — nothing here is urgent.
+    - cron: '0 9 * * *'
+  # Lets you trigger a sync by hand from the Actions tab.
+  workflow_dispatch:
+
+# The default token is read-only; committing back needs write.
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-prices
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Fetch prices
+        run: node sync-prices.mjs
+
+      # data/prices.json is gitignored — the site only loads the .js twin.
+      - name: Commit if prices changed
+        run: |
+          if git diff --quiet -- data/prices.js; then
+            echo "No price movement today — nothing to commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/prices.js
+          git commit -m "Sync prices for $(date -u +%Y-%m-%d)"
+          git push
