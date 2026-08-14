@@ -42,10 +42,12 @@ No server, no build step, no install — opening `index.html` locally works too.
   shelf. Open or closed is remembered under `riftbound-prefs-v1`, kept separate
   from the collection so exports stay portable. Without a price sync the chip
   reads "Set progress" and opens the same panel minus the money.
-- **Currency** — the dropdown beside the worth switches every figure in the app
-  between USD, EUR and GBP, and is remembered with the other preferences. Read
-  the caveat under [Currency](#currency): these are US market prices converted at
-  a stored rate, not Cardmarket prices.
+- **Currency** — the dropdown beside the worth switches every figure between USD,
+  EUR and GBP, and is remembered with the other preferences. It changes the
+  **market**, not just the units: EUR shows Cardmarket's own European prices,
+  while USD and GBP show TCGplayer's. See
+  [Two markets, not one currency](#two-markets-not-one-currency) — the totals
+  deliberately don't reconcile at any exchange rate.
 - **Set rows are also filters** — click one to narrow the grid to that set, click
   it again for everything. It drives the same filter as the set dropdown.
 - **On narrow screens** (≤760px) everything except the brand and the search box
