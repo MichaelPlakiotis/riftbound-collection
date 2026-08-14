@@ -21,6 +21,8 @@ const PRICE_META = PRICE_DATA?.meta || null;
 
 const priceOf = (id) => (typeof PRICES[id]?.m === 'number' ? PRICES[id].m : null);
 const prevPriceOf = (id) => (typeof PRICES[id]?.p === 'number' ? PRICES[id].p : null);
+/** Foil market price. Falls back to the normal one so a foil is never valued at nothing. */
+const foilPriceOf = (id) => (typeof PRICES[id]?.f === 'number' ? PRICES[id].f : priceOf(id));
 
 // Promo sets (organized play, judge, general promos) aren't part of normal set
 // completion, so they're excluded from the denominator and hidden by default.
@@ -75,8 +77,9 @@ function sanitize(incoming) {
   for (const [id, v] of Object.entries(incoming || {})) {
     if (!KNOWN_IDS.has(id)) { skipped++; continue; }
     const q = Math.min(99, Math.max(0, parseInt(v?.q, 10) || 0));
+    const f = Math.min(99, Math.max(0, parseInt(v?.f, 10) || 0));
     const w = !!v?.w;
-    if (q > 0 || w) clean[id] = { q, w };
+    if (q > 0 || f > 0 || w) clean[id] = { q, f, w };
   }
   return { clean, skipped };
 }
@@ -135,14 +138,25 @@ function money(usd) {
   return fmt(currency, v >= 1000 ? 0 : 2).format(v);
 }
 
+/**
+ * `q` counts ordinary copies and `f` counts foils. They're separate because
+ * foils price separately — often several times the normal card — so folding
+ * them into one number would misstate what a collection is worth. An entry
+ * saved before foils existed simply has no `f`, which reads as zero.
+ */
 const qtyOf = (id) => collection[id]?.q || 0;
+const foilOf = (id) => collection[id]?.f || 0;
+/** Every physical copy of a card, foil or not — what "do I own this" means. */
+const copiesOf = (id) => qtyOf(id) + foilOf(id);
 const wishOf = (id) => !!collection[id]?.w;
 
 function setEntry(id, patch) {
-  const cur = collection[id] || { q: 0, w: false };
+  const cur = collection[id] || { q: 0, f: 0, w: false };
   const next = { ...cur, ...patch };
-  if (next.q <= 0 && !next.w) delete collection[id];
-  else collection[id] = { q: Math.max(0, next.q | 0), w: !!next.w };
+  const q = Math.max(0, next.q | 0);
+  const f = Math.max(0, next.f | 0);
+  if (q <= 0 && f <= 0 && !next.w) delete collection[id];
+  else collection[id] = { q, f, w: !!next.w };
   save();
 }
 
@@ -173,7 +187,8 @@ function matches(c) {
   if (state.rarity && c.rarity !== state.rarity) return false;
   if (state.type && c.type !== state.type) return false;
 
-  const q = qtyOf(c.id);
+  // A foil-only card is still a card you own, so these count both columns.
+  const q = copiesOf(c.id);
   if (state.own === 'owned' && q === 0) return false;
   if (state.own === 'missing' && q > 0) return false;
   if (state.own === 'wishlist' && !wishOf(c.id)) return false;
@@ -266,7 +281,7 @@ const esc = (s) =>
  * Market price plus the move since the previous sync. The stack value only shows
  * once you own more than one, otherwise it just repeats the unit price.
  */
-function priceHTML(c, q) {
+function priceHTML(c, q, f = 0) {
   if (!PRICE_DATA) return '';
   const p = priceOf(c.id);
   if (p == null) {
@@ -287,14 +302,31 @@ function priceHTML(c, q) {
     }
   }
 
-  const stack = q > 1 ? `<span class="stack" title="${q} copies">${money(p * q)}</span>` : '';
+  // Foils are their own market — usually dearer — so the stack is priced in two
+  // parts rather than multiplying everything by the normal price.
+  const fp = foilPriceOf(c.id);
+  const worth = p * q + (fp ?? 0) * f;
+  const copies = q + f;
+  const stackTitle = f
+    ? `${q} normal at ${money(p)} + ${f} foil at ${money(fp ?? 0)}`
+    : `${copies} copies`;
+  const stack =
+    copies > 1 ? `<span class="stack" title="${esc(stackTitle)}">${money(worth)}</span>` : '';
+
+  const foilNote =
+    typeof PRICES[c.id]?.f === 'number'
+      ? `<span class="price-foil" title="TCGplayer foil market price">${money(PRICES[c.id].f)}✦</span>`
+      : '';
+
   return `<div class="card-price"><span class="price" title="TCGplayer market price, ${esc(
     PRICE_META.synced
-  )}">${money(p)}</span>${delta}${stack}</div>`;
+  )}">${money(p)}</span>${delta}${foilNote}${stack}</div>`;
 }
 
 function cardHTML(c) {
   const q = qtyOf(c.id);
+  const f = foilOf(c.id);
+  const copies = q + f;
   const w = wishOf(c.id);
   const img = c.image || c.image_full || '';
   const num = String(c.collector_number).padStart(3, '0') + (c.variant ? c.variant : '');
@@ -306,7 +338,7 @@ function cardHTML(c) {
     .join('');
 
   return `
-    <article class="card ${q > 0 ? 'is-owned' : ''} ${w ? 'is-wish' : ''}" data-id="${esc(c.id)}">
+    <article class="card ${copies > 0 ? 'is-owned' : ''} ${w ? 'is-wish' : ''}" data-id="${esc(c.id)}">
       <div class="card-img">
         ${
           img
@@ -317,7 +349,8 @@ function cardHTML(c) {
                  <span class="noart-note">no art yet</span>
                </div>`
         }
-        <span class="qty-badge" ${q > 0 ? '' : 'hidden'}>${q}</span>
+        <span class="qty-badge" ${copies > 0 ? '' : 'hidden'}>${copies}</span>
+        <span class="foil-badge" ${f > 0 ? '' : 'hidden'} title="${f} foil${f === 1 ? '' : 's'}">${f}✦</span>
         <button class="wish-btn ${w ? 'on' : ''}" type="button"
                 data-act="wish" title="Toggle wishlist"
                 aria-label="Toggle wishlist for ${esc(c.name)}"
@@ -330,12 +363,19 @@ function cardHTML(c) {
           <span style="color:var(--r-${esc(c.rarity)}, #7d8896)">${esc(c.rarity)}</span>
           <span class="num">${esc(c.set_id)}-${esc(num)}</span>
         </div>
-        ${priceHTML(c, q)}
+        ${priceHTML(c, q, f)}
         <div class="stepper">
           <button type="button" data-act="dec" aria-label="Remove one" ${q === 0 ? 'disabled' : ''}>−</button>
           <input type="number" min="0" max="99" value="${q}" data-act="qty"
                  aria-label="Copies of ${esc(c.name)} owned">
           <button type="button" data-act="inc" aria-label="Add one">+</button>
+        </div>
+        <div class="stepper stepper-foil" title="Foil copies">
+          <button type="button" data-act="fdec" aria-label="Remove one foil" ${f === 0 ? 'disabled' : ''}>−</button>
+          <input type="number" min="0" max="99" value="${f}" data-act="fqty"
+                 aria-label="Foil copies of ${esc(c.name)} owned">
+          <button type="button" data-act="finc" aria-label="Add one foil">+</button>
+          <span class="foil-tag" aria-hidden="true">✦</span>
         </div>
       </div>
     </article>`;
@@ -356,14 +396,21 @@ function refreshCard(id) {
   const node = grid.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
   if (!node) return;
   const q = qtyOf(id);
+  const f = foilOf(id);
+  const copies = q + f;
   const w = wishOf(id);
 
-  node.classList.toggle('is-owned', q > 0);
+  node.classList.toggle('is-owned', copies > 0);
   node.classList.toggle('is-wish', w);
 
   const badge = node.querySelector('.qty-badge');
-  badge.textContent = q;
-  badge.hidden = q === 0;
+  badge.textContent = copies;
+  badge.hidden = copies === 0;
+
+  const foilBadge = node.querySelector('.foil-badge');
+  foilBadge.textContent = `${f}✦`;
+  foilBadge.hidden = f === 0;
+  foilBadge.title = `${f} foil${f === 1 ? '' : 's'}`;
 
   const wishBtn = node.querySelector('.wish-btn');
   wishBtn.classList.toggle('on', w);
@@ -372,12 +419,14 @@ function refreshCard(id) {
 
   node.querySelector('[data-act="qty"]').value = q;
   node.querySelector('[data-act="dec"]').disabled = q === 0;
+  node.querySelector('[data-act="fqty"]').value = f;
+  node.querySelector('[data-act="fdec"]').disabled = f === 0;
 
   // The stack total depends on the count, so this row has to be redrawn too.
   const priceRow = node.querySelector('.card-price');
   if (priceRow) {
     const card = CARDS.find((c) => c.id === id);
-    priceRow.outerHTML = priceHTML(card, q);
+    priceRow.outerHTML = priceHTML(card, q, foilOf(id));
   }
 
   renderStats();
@@ -398,16 +447,22 @@ function collectionValue() {
 
   for (const c of CARDS) {
     const q = qtyOf(c.id);
-    if (!q) continue;
+    const f = foilOf(c.id);
+    const copies = q + f;
+    if (!copies) continue;
     const p = priceOf(c.id);
     if (p == null) {
-      unpriced += q;
+      unpriced += copies;
       continue;
     }
-    priced += q;
-    const line = p * q;
+    priced += copies;
+    // Foils carry their own market price, so a line is the two stacks added.
+    const fp = foilPriceOf(c.id) ?? p;
+    const line = p * q + fp * f;
     total += line;
-    lines.push({ card: c, q, unit: p, line });
+    // `unit` drives the breakdown's "x at y each"; with a mixed stack the
+    // blended figure is the honest one.
+    lines.push({ card: c, q: copies, foils: f, unit: line / copies, line });
   }
 
   lines.sort((a, b) => b.line - a.line);
@@ -415,8 +470,9 @@ function collectionValue() {
 }
 
 function renderStats() {
-  const uniqueOwned = COLLECTABLE.filter((c) => qtyOf(c.id) > 0).length;
-  const totalCopies = COLLECTABLE.reduce((n, c) => n + qtyOf(c.id), 0);
+  const uniqueOwned = COLLECTABLE.filter((c) => copiesOf(c.id) > 0).length;
+  const totalCopies = COLLECTABLE.reduce((n, c) => n + copiesOf(c.id), 0);
+  const foilCopies = COLLECTABLE.reduce((n, c) => n + foilOf(c.id), 0);
   const wishCount = COLLECTABLE.filter((c) => wishOf(c.id)).length;
   const pct = COLLECTABLE.length
     ? Math.round((uniqueOwned / COLLECTABLE.length) * 100)
@@ -463,6 +519,9 @@ function renderStats() {
     currencyHTML +
     `<span><b>${uniqueOwned}</b> / ${COLLECTABLE.length} unique <span class="pct">(${pct}%)</span></span>` +
     `<span><b>${totalCopies}</b> total copies</span>` +
+    (foilCopies
+      ? `<span title="Counted inside the total, priced at the foil market"><b>${foilCopies}</b> foil</span>`
+      : '') +
     `<span><b>${wishCount}</b> on wishlist</span>`;
 
   const panel = el('stats-panel');
@@ -484,7 +543,7 @@ function renderStats() {
       // Per-set rows count every card in the set, promos included — the promo
       // exclusion only applies to the overall completion figure above.
       const inSet = CARDS.filter((c) => c.set_id === s.id);
-      const owned = inSet.filter((c) => qtyOf(c.id) > 0).length;
+      const owned = inSet.filter((c) => copiesOf(c.id) > 0).length;
       const p = inSet.length ? Math.round((owned / inSet.length) * 100) : 0;
       const worth = setValue[s.id];
       const active = state.set === s.id;
@@ -564,6 +623,8 @@ grid.addEventListener('click', (e) => {
   const act = btn.dataset.act;
   if (act === 'inc') setEntry(id, { q: qtyOf(id) + 1 });
   else if (act === 'dec') setEntry(id, { q: qtyOf(id) - 1 });
+  else if (act === 'finc') setEntry(id, { f: foilOf(id) + 1 });
+  else if (act === 'fdec') setEntry(id, { f: foilOf(id) - 1 });
   else if (act === 'wish') setEntry(id, { w: !wishOf(id) });
   else return;
 
@@ -571,12 +632,12 @@ grid.addEventListener('click', (e) => {
 });
 
 grid.addEventListener('change', (e) => {
-  const input = e.target.closest('[data-act="qty"]');
+  const input = e.target.closest('[data-act="qty"], [data-act="fqty"]');
   if (!input) return;
   const id = input.closest('.card')?.dataset.id;
   if (!id) return;
   const n = Math.min(99, Math.max(0, parseInt(input.value, 10) || 0));
-  setEntry(id, { q: n });
+  setEntry(id, input.dataset.act === 'fqty' ? { f: n } : { q: n });
   refreshCard(id);
 });
 
@@ -770,13 +831,33 @@ el('btn-reset').addEventListener('click', () => {
 function exportRows() {
   const byId = new Map(CARDS.map((c) => [c.id, c]));
   return Object.entries(collection)
-    .map(([id, e]) => ({ card: byId.get(id), q: Math.max(0, e?.q | 0), w: !!e?.w }))
-    .filter((r) => r.card && (r.q > 0 || r.w))
+    .map(([id, e]) => ({
+      card: byId.get(id),
+      q: Math.max(0, e?.q | 0),
+      f: Math.max(0, e?.f | 0),
+      w: !!e?.w,
+    }))
+    .filter((r) => r.card && (r.q > 0 || r.f > 0 || r.w))
     .sort(
       (a, b) =>
         a.card.set_id.localeCompare(b.card.set_id) ||
         a.card.collector_number - b.card.collector_number
     );
+}
+
+/**
+ * Splits each entry into one row per printing, the way other trackers file
+ * them: a normal stack and a foil stack are different things to own and price.
+ * A wishlist-only entry still emits its single row so the flag survives.
+ */
+function printingRows(rows) {
+  const out = [];
+  for (const r of rows) {
+    if (r.q > 0) out.push({ card: r.card, qty: r.q, foil: false, w: r.w });
+    if (r.f > 0) out.push({ card: r.card, qty: r.f, foil: true, w: r.w });
+    if (r.q === 0 && r.f === 0) out.push({ card: r.card, qty: 0, foil: false, w: r.w });
+  }
+  return out;
 }
 
 const setNameOf = (id) => META.sets.find((s) => s.id === id)?.name || id;
@@ -834,13 +915,14 @@ const EXPORT_FORMATS = {
         'Card ID', 'Set Code', 'Set Name', 'Card Number', 'Quantity', 'Foil', 'Wishlist',
         'Rarity', 'Type', 'Domains', `Unit Price (${currency})`, `Total Price (${currency})`, 'Name',
       ];
-      const lines = rows.map((r) => {
-        const usd = priceOf(r.card.id);
+      const lines = printingRows(rows).map((r) => {
+        // Each row is priced as the printing it actually is.
+        const usd = r.foil ? foilPriceOf(r.card.id) : priceOf(r.card.id);
         const unit = usd == null ? '' : (usd * RATES[currency]).toFixed(2);
-        const total = usd == null ? '' : (usd * RATES[currency] * r.q).toFixed(2);
+        const total = usd == null ? '' : (usd * RATES[currency] * r.qty).toFixed(2);
         return [
           dotggId(r.card), r.card.set_id, setNameOf(r.card.set_id), cardNo(r.card),
-          r.q, 0, r.w ? 'yes' : 'no',
+          r.qty, r.foil ? 'yes' : 'no', r.w ? 'yes' : 'no',
           r.card.rarity, r.card.type, r.card.domains.join(' / '), unit, total, plainName(r.card),
         ].map(csvCell).join(',');
       });
@@ -863,9 +945,9 @@ const EXPORT_FORMATS = {
     build: (rows) =>
       `${['Card ID,Quantity,Foil,Name']
         .concat(
-          rows
-            .filter((r) => r.q > 0) // a row at 0 is dropped on their side anyway
-            .map((r) => `${dotggId(r.card)},${r.q},0,${plainName(r.card)}`)
+          printingRows(rows)
+            .filter((r) => r.qty > 0) // a row at 0 is dropped on their side anyway
+            .map((r) => `${dotggId(r.card)},${r.qty},${r.foil ? 1 : 0},${plainName(r.card)}`)
         )
         .join('\r\n')}\r\n`,
   },
@@ -874,14 +956,16 @@ const EXPORT_FORMATS = {
     ext: 'txt',
     mime: 'text/plain',
     build: (rows) => {
-      const owned = rows.filter((r) => r.q > 0);
+      const owned = rows.filter((r) => r.q > 0 || r.f > 0);
       const wished = rows.filter((r) => r.w);
-      const copies = owned.reduce((a, r) => a + r.q, 0);
+      const copies = owned.reduce((a, r) => a + r.q + r.f, 0);
+      const foils = owned.reduce((a, r) => a + r.f, 0);
 
       const out = [
         'Riftbound collection',
         `Exported ${new Date().toISOString().slice(0, 10)}`,
-        `${owned.length} unique cards · ${copies} total copies`,
+        `${owned.length} unique cards · ${copies} total copies` +
+          (foils ? ` · ${foils} foil` : ''),
       ];
 
       let set = null;
@@ -890,7 +974,10 @@ const EXPORT_FORMATS = {
           set = r.card.set_id;
           out.push('', `${setNameOf(set)} (${set})`, '-'.repeat(setNameOf(set).length + set.length + 3));
         }
-        out.push(`${r.q}x ${r.card.name} (${set} ${cardNo(r.card)})`);
+        // Foils are called out inline rather than given their own line, so the
+        // list still reads as one row per card the way a binder does.
+        const foil = r.f ? ` [${r.f} foil]` : '';
+        out.push(`${r.q + r.f}x ${r.card.name} (${set} ${cardNo(r.card)})${foil}`);
       }
 
       if (wished.length) {
@@ -908,8 +995,13 @@ const EXPORT_FORMATS = {
     mime: 'text/plain',
     // Mass-entry boxes take "quantity name" and nothing else — no header, and no
     // wishlist-only rows, since a card you don't own has no quantity to enter.
+    // The box has no syntax for a printing either, so foils are folded into the
+    // count; picking the foil is something you do in the cart.
     build: (rows) =>
-      `${rows.filter((r) => r.q > 0).map((r) => `${r.q} ${r.card.name}`).join('\n')}\n`,
+      `${rows
+        .filter((r) => r.q + r.f > 0)
+        .map((r) => `${r.q + r.f} ${r.card.name}`)
+        .join('\n')}\n`,
   },
 };
 
@@ -1135,7 +1227,8 @@ function renderDeck() {
 function buildDeck(legendId = null) {
   currentDeck = window.RiftboundDeck.buildDeck({
     cards: CARDS,
-    qtyOf,
+    // A foil is the same card across the table, so the pool counts every copy.
+    qtyOf: copiesOf,
     priceOf,
     legendId,
   });

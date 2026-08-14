@@ -14,7 +14,8 @@ No server, no build step, no install — opening `index.html` locally works too.
 ## Usage
 
 - **`+` / `−` / type a number** — copies you own. Owned cards light up; unowned
-  are dimmed so gaps are obvious at a glance.
+  are dimmed so gaps are obvious at a glance. The second, quieter stepper below
+  counts foils, which are priced separately — see [Foils](#foils).
 - **☆** — wishlist flag.
 - **Search** — matches card name, rules text, keywords and card ID. `Ctrl+F`
   (`Cmd+F` on Mac) jumps here instead of opening the browser's find bar, which
@@ -66,10 +67,10 @@ No server, no build step, no install — opening `index.html` locally works too.
   | Format | What it's for |
   | --- | --- |
   | **JSON** | Full backup — the only format Import reads back |
-  | **CSV** | Spreadsheets and most collection trackers. One row per card: card id, set code, printed number, quantity, foil, wishlist flag, rarity, type, domains, unit/total price in the currency currently selected, and the name. UTF-8 BOM so Excel doesn't mangle card names |
-  | **riftbound.gg** | Four columns shaped for [riftbound.gg](https://riftbound.gg/collection/)'s collection importer. See below |
-  | **Text** | Readable list grouped by set — `3x Ashe, Frost Archer (OGN 012)` — with a wishlist section at the end |
-  | **TCGplayer mass entry** | `3 Ashe, Frost Archer` lines for bulk-add boxes. Owned copies only; a wishlist card has no quantity to enter |
+  | **CSV** | Spreadsheets and most collection trackers. One row per *printing*, so a card you hold in both finishes gets a normal row and a foil row: card id, set code, printed number, quantity, foil, wishlist flag, rarity, type, domains, unit/total price in the currency currently selected, and the name. Each row is priced as the printing it is. UTF-8 BOM so Excel doesn't mangle card names |
+  | **riftbound.gg** | Four columns shaped for [riftbound.gg](https://riftbound.gg/collection/)'s collection importer, one row per printing. See below |
+  | **Text** | Readable list grouped by set — `3x Ashe, Frost Archer (OGN 012)`, with `[1 foil]` appended when some are — and a wishlist section at the end |
+  | **TCGplayer mass entry** | `3 Ashe, Frost Archer` lines for bulk-add boxes. Owned copies only, foils included in the count; a wishlist card has no quantity to enter |
 
   Everything but JSON is one-way and identifies cards the way they're printed
   (set code + zero-padded collector number) rather than by this app's internal
@@ -417,3 +418,63 @@ Nothing, unless you use it. `vendor/supabase.js` (the client, vendored so the
 site keeps its no-build-step, no-runtime-CDN shape) is injected on demand — only
 when a stored session needs restoring or someone opens the sign-in dialog. A
 visitor who never signs in fetches exactly what they always did.
+
+## Foils
+
+Foil copies are counted separately from ordinary ones, because they price
+separately — often several times the normal card. A collection entry is
+`{ q, f, w }`: `q` ordinary copies, `f` foils, `w` the wishlist flag. Entries
+saved before foils existed have no `f`, which reads as zero, so nothing needed
+migrating.
+
+Each tile gets a second, quieter stepper under the main one. The count badge
+shows every copy you own and a small iridescent badge underneath says how many
+of those are foil, rather than putting two competing numbers side by side. The
+price row shows the foil market price beside the normal one whenever TCGplayer
+has both, so the gap is visible before you own either.
+
+Everything downstream follows the split:
+
+- **Collection worth** values each stack at its own price — two normals at $0.09
+  plus three foils at $0.22 is $0.84, not five of anything.
+- **CSV and riftbound.gg exports** emit one row per printing, which is how other
+  trackers file them and what riftbound.gg's `foil` column expects.
+- **Text export** folds them into one line per card — `5x Chaos Rune (UNL R05)
+  [3 foil]` — since that list is meant to read like a binder.
+- **TCGplayer mass entry** uses the combined count: that box has no syntax for a
+  printing, and picking the foil is something you do in the cart.
+- **The deck generator** counts every copy — a foil is the same card across the
+  table.
+
+`sync-prices.mjs` reads foil prices from a per-product endpoint, the only one
+that separates Normal from Foil. There is no batch form, so it costs one request
+per card — about 1,380 of them, run six at a time inside the same daily job. A
+lookup that fails carries the previous sync's foil price forward rather than
+dropping it, the same way the exchange rate is.
+
+## Cards Riftcodex doesn't have
+
+Riftcodex lags TCGplayer's catalogue. Most visibly it carries no Rune rows at
+all for Unleashed or Spiritforged, so a rune pulled from either pack had nowhere
+to go; 232 of TCGplayer's products had no counterpart here in total.
+
+`sync-cards.mjs` keeps Riftcodex as the source of record and fills what it
+lacks, rebuilding the card ID from the collector number. Collections are keyed
+by ID, so a wrong guess is worse than an absent card — a synthetic ID colliding
+with a real one silently rewrites what someone owns. Three guards apply:
+
+1. the number has to match a shape we trust — `131/219` or `R05`, nothing else
+2. the resulting ID must not already belong to a real card
+3. no two products may claim the same ID
+
+The predictor was checked by replaying it over the 1,049 products already held:
+every one reproduces its real ID. On the current catalogue the guards admit 91
+of the 232, including all 54 missing runes. The 141 left out are Prize Wall
+metals whose IDs would have collided, tokens, and starred signature variants.
+
+Synthesised cards carry type, domains, rarity, costs and often rules text, but
+no art — TCGplayer's CDN refuses hotlinks — so the grid shows a labelled
+placeholder that dims and brightens on ownership like a real image. Costs follow
+Riftcodex's convention rather than TCGplayer's zeros, or a Rune claiming energy 0
+would sort ahead of the cards the cost sorts deliberately sink. They're flagged
+`partial: true`, and a real Riftcodex row takes over whenever one appears.

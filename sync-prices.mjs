@@ -23,7 +23,52 @@ const PAUSE_MS = 250;
 // ECB reference rates via Frankfurter — no key, no rate limit, CORS-friendly.
 const FX = 'https://api.frankfurter.dev/v1/latest?base=USD&symbols=EUR,GBP';
 
+// Foil is a printing, not a product: the bulk search returns one market price
+// per product, and only this per-product endpoint separates Normal from Foil.
+// There is no batch form of it, so a foil pass costs one request per card.
+const POINTS = (productId) => `https://mpapi.tcgplayer.com/v2/product/${productId}/pricepoints`;
+const FOIL_CONCURRENCY = 6;
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Runs `fn` over `items` with a fixed number of workers, preserving order. */
+async function pool(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        out[i] = await fn(items[i], i);
+      }
+    })
+  );
+  return out;
+}
+
+/** Normal and Foil market prices for one product, or null if it can't be had. */
+async function fetchPricePoints(productId, attempt = 1) {
+  try {
+    const res = await fetch(POINTS(productId), {
+      headers: {
+        accept: 'application/json',
+        origin: 'https://www.tcgplayer.com',
+        referer: 'https://www.tcgplayer.com/',
+        'user-agent': 'riftbound-collection/1.0 (personal collection tracker)',
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const rows = await res.json();
+    if (!Array.isArray(rows)) throw new Error('unexpected shape');
+    const of = (kind) => rows.find((r) => r.printingType === kind)?.marketPrice;
+    return { normal: round(of('Normal')), foil: round(of('Foil')) };
+  } catch (err) {
+    if (attempt >= 3) return null;
+    await sleep(400 * attempt);
+    return fetchPricePoints(productId, attempt + 1);
+  }
+}
 
 /** One page of the product-line listing. Returns { total, items }. */
 async function fetchPage(from, attempt = 1) {
@@ -151,7 +196,9 @@ async function main() {
     total = t;
     if (!items.length) break;
     for (const p of items) {
-      const priced = { market: round(p.marketPrice), low: round(p.lowestPrice) };
+      // pid rides along so the foil pass can look the product up again — cards
+      // matched by name have no tcgplayer_id of their own to go back to.
+      const priced = { market: round(p.marketPrice), low: round(p.lowestPrice), pid: String(p.productId) };
       byProduct.set(String(p.productId), priced);
       const key = `${normName(p.setName)}|${normName(p.productName)}`;
       if (!byName.has(key)) byName.set(key, []);
@@ -165,6 +212,8 @@ async function main() {
 
   const setName = Object.fromEntries(data.meta.sets.map((s) => [s.id, s.name]));
   const prices = {};
+  /** card id -> TCGplayer product id, for the foil pass below. */
+  const pidFor = {};
   let matched = 0;
   let viaName = 0;
   let unmatched = 0;
@@ -196,7 +245,35 @@ async function main() {
     const was = prevPrices[card.id]?.m;
     if (typeof was === 'number' && was > 0) entry.p = was;
     prices[card.id] = entry;
+    if (hit.pid) pidFor[card.id] = hit.pid;
   }
+
+  console.log('Fetching foil prices…');
+  const foilIds = Object.keys(pidFor);
+  let foiled = 0;
+  let foilCarried = 0;
+  let done = 0;
+
+  await pool(foilIds, FOIL_CONCURRENCY, async (cardId) => {
+    const points = await fetchPricePoints(pidFor[cardId]);
+    done++;
+    if (done % 50 === 0 || done === foilIds.length) {
+      process.stdout.write(`\r  ${done} / ${foilIds.length} products`);
+    }
+    if (points?.foil != null) {
+      prices[cardId].f = points.foil;
+      foiled++;
+      return;
+    }
+    // A failed lookup shouldn't wipe a figure we already had; a stale foil price
+    // beats none, the same way the exchange rate is carried forward.
+    const before = prevPrices[cardId]?.f;
+    if (typeof before === 'number' && before > 0) {
+      prices[cardId].f = before;
+      foilCarried++;
+    }
+  });
+  console.log(`\n  ${foiled} foil prices, ${foilCarried} carried forward`);
 
   console.log('Fetching exchange rates…');
   // A rate from the last sync beats no rate at all — the conversion is labelled
@@ -216,6 +293,7 @@ async function main() {
     previousSync: prevDate,
     priced: matched,
     unpriced: unmatched,
+    foilPriced: Object.values(prices).filter((p) => typeof p.f === 'number').length,
     ...(fx || {}),
   };
 

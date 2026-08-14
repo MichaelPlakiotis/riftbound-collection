@@ -74,20 +74,27 @@
 
   /* ---------------- collection helpers ---------------- */
 
-  /** Union of two collections: the larger count, and a wishlist flag from either. */
+  /**
+   * Union of two collections: the larger count of each printing, and a wishlist
+   * flag from either. Normal and foil counts are merged independently — they're
+   * separate stacks, so taking the max of one says nothing about the other.
+   */
   function merge(a, b) {
     const out = {};
     for (const id of new Set([...Object.keys(a || {}), ...Object.keys(b || {})])) {
       const q = Math.max(a?.[id]?.q || 0, b?.[id]?.q || 0);
+      const f = Math.max(a?.[id]?.f || 0, b?.[id]?.f || 0);
       const w = !!(a?.[id]?.w || b?.[id]?.w);
-      if (q > 0 || w) out[id] = { q, w };
+      if (q > 0 || f > 0 || w) out[id] = { q, f, w };
     }
     return out;
   }
 
   /** Key order isn't meaningful, so compare a normalised form. */
   const stable = (o) =>
-    JSON.stringify(Object.keys(o || {}).sort().map((k) => [k, o[k].q, !!o[k].w]));
+    JSON.stringify(
+      Object.keys(o || {}).sort().map((k) => [k, o[k].q || 0, o[k].f || 0, !!o[k].w])
+    );
 
   const sameAs = (a, b) => stable(a) === stable(b);
 

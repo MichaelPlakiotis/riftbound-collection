@@ -449,6 +449,22 @@ main { padding: 16px 20px 60px; }
   text-align: center;
 }
 
+/* Sits under the count badge: the total already includes foils, so this says
+   how many of them are, rather than adding a second competing number. */
+.foil-badge {
+  position: absolute;
+  top: 30px;
+  left: 6px;
+  padding: 2px 7px;
+  border-radius: 12px;
+  background: linear-gradient(115deg, #7c5cff, #21c7d6 55%, #ffb347);
+  color: #10141a;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  letter-spacing: .02em;
+}
+
 .wish-btn {
   position: absolute;
   top: 6px;
@@ -506,6 +522,22 @@ main { padding: 16px 20px 60px; }
 }
 .stepper button:hover:not(:disabled) { color: var(--text); border-color: var(--accent-dim); }
 .stepper button:disabled { opacity: .35; cursor: default; }
+
+/* The foil row is deliberately quieter than the main count — most cards never
+   get one, and it shouldn't compete with the number people actually edit. */
+.stepper-foil { margin-top: 5px; gap: 5px; }
+.stepper-foil button, .stepper-foil input { height: 22px; font-size: 12px; }
+.stepper-foil button { width: 24px; }
+.stepper-foil input { color: var(--text-dim); }
+.card.is-owned .stepper-foil input { color: var(--text); }
+.foil-tag {
+  font-size: 12px;
+  line-height: 1;
+  background: linear-gradient(115deg, #7c5cff, #21c7d6 55%, #ffb347);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
 .stepper input {
   flex: 1;
   min-width: 0;
@@ -538,6 +570,9 @@ main { padding: 16px 20px 60px; }
 .card-price .delta { font-size: 11px; }
 .card-price .delta.up { color: var(--owned); }
 .card-price .delta.down { color: #e0574a; }
+/* The foil market price, shown whenever one exists so the gap against the
+   normal price is visible before you own either. */
+.card-price .price-foil { font-size: 11px; color: #9d8cff; }
 /* Value of the whole stack, pushed right so the unit price stays the anchor. */
 .card-price .stack { margin-left: auto; color: var(--text-dim); }
 
