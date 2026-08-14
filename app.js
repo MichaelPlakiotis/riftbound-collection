@@ -308,7 +308,15 @@ function cardHTML(c) {
   return `
     <article class="card ${q > 0 ? 'is-owned' : ''} ${w ? 'is-wish' : ''}" data-id="${esc(c.id)}">
       <div class="card-img">
-        <img src="${esc(img)}" alt="${esc(c.name)}" loading="lazy" decoding="async">
+        ${
+          img
+            ? `<img src="${esc(img)}" alt="${esc(c.name)}" loading="lazy" decoding="async">`
+            : // Cards the sync built from TCGplayer have no art to link to.
+              `<div class="card-noart" title="No art available for this card yet">
+                 <span class="noart-name">${esc(c.name)}</span>
+                 <span class="noart-note">no art yet</span>
+               </div>`
+        }
         <span class="qty-badge" ${q > 0 ? '' : 'hidden'}>${q}</span>
         <button class="wish-btn ${w ? 'on' : ''}" type="button"
                 data-act="wish" title="Toggle wishlist"

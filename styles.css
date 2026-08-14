@@ -405,6 +405,36 @@ main { padding: 16px 20px 60px; }
 }
 .card.is-owned .card-img img { opacity: 1; filter: none; }
 
+/* Stand-in for cards the sync built from TCGplayer, which publishes no art we
+   may link to. Dimmed and brightened on ownership exactly like a real image, so
+   a shelf of them still reads as owned or missing at a glance. */
+.card-noart {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  text-align: center;
+  box-sizing: border-box;
+  background: repeating-linear-gradient(
+    -45deg, #11161d, #11161d 8px, #0e131a 8px, #0e131a 16px
+  );
+  border: 1px dashed var(--line);
+  opacity: .5;
+  transition: opacity .2s;
+}
+.card.is-owned .card-noart { opacity: 1; }
+.noart-name { font-size: 12px; line-height: 1.3; color: var(--text-dim); }
+.noart-note {
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--accent-dim);
+}
+
 .qty-badge {
   position: absolute;
   top: 6px;

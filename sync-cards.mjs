@@ -164,6 +164,227 @@ function normalize(c) {
   };
 }
 
+/* ---------------- TCGplayer supplement ---------------- */
+
+const TCG_SEARCH = 'https://mp-search-api.tcgplayer.com/v1/search/request?q=&isList=false';
+const TCG_LINE = 'riftbound-league-of-legends-trading-card-game';
+
+/**
+ * Riftcodex lags TCGplayer's catalogue — as of writing it carries no Rune rows
+ * at all for Unleashed or Spiritforged, so a rune pulled from either pack simply
+ * doesn't exist in the tracker. TCGplayer lists every printed product and, in
+ * `customAttributes`, enough to build a usable card: collector number, type,
+ * domain, costs, rarity and often the rules text.
+ */
+async function fetchTcgProducts() {
+  const out = [];
+  let from = 0;
+  let total = Infinity;
+
+  while (from < total) {
+    const res = await fetch(TCG_SEARCH, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+        origin: 'https://www.tcgplayer.com',
+        referer: 'https://www.tcgplayer.com/',
+        'user-agent': 'riftbound-collection/1.0 (personal collection tracker)',
+      },
+      body: JSON.stringify({
+        algorithm: 'sales_synonym_v2',
+        from,
+        size: 50,
+        filters: { term: { productLineName: [TCG_LINE] }, range: {}, match: {} },
+        listingSearch: {
+          context: { cart: {} },
+          filters: {
+            term: { sellerStatus: 'Live', channelId: 0 },
+            range: { quantity: { gte: 1 } },
+            exclude: { channelExclusion: 0 },
+          },
+        },
+        context: { cart: {}, shippingCountry: 'US', userProfile: {} },
+        settings: { useFuzzySearch: true, didYouMean: {} },
+        sort: { field: 'product-sorting-name', order: 'asc' },
+      }),
+      signal: AbortSignal.timeout(25_000),
+    });
+    if (!res.ok) throw new Error(`TCGplayer HTTP ${res.status}`);
+    const result = (await res.json()).results?.[0];
+    if (!result) throw new Error('TCGplayer returned no results block');
+    total = result.totalResults ?? 0;
+    out.push(...(result.results ?? []));
+    from += 50;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return out;
+}
+
+/**
+ * Rebuilds the Riftbound ID a card would carry if Riftcodex knew about it.
+ * Verified against the 1049 products we already hold: every one reproduces its
+ * real ID exactly. Two number shapes are trustworthy and nothing else is:
+ *
+ *   "131/219" -> unl-131-219     ordinary collector number over set size
+ *   "R05"     -> unl-r05         runes, which Vendetta already numbers this way
+ *
+ * Tokens ("T02 // T04"), signature variants (a starred collector number) and
+ * alternate arts ("084a/166") get no ID — their real shape isn't predictable
+ * from here, and a wrong guess is worse than an absent card, because
+ * collections key off the ID.
+ */
+function predictId(product) {
+  const code = (product.setCode || '').toLowerCase();
+  const num = String(product.customAttributes?.number || '');
+  if (!code) return null;
+
+  const numbered = /^(\d+)\/(\d+)$/.exec(num);
+  if (numbered) return `${code}-${numbered[1].padStart(3, '0')}-${numbered[2]}`;
+
+  const rune = /^R(\d+)([a-z]?)$/i.exec(num);
+  if (rune) return `${code}-r${rune[1].padStart(2, '0')}${(rune[2] || '').toLowerCase()}`;
+
+  return null;
+}
+
+/** TCGplayer writes rules text as HTML; the app expects Riftcodex's plain text. */
+const plainText = (html) =>
+  html
+    ? String(html)
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<[^>]+>/g, '')
+        .replace(/\r/g, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim()
+    : null;
+
+/** "Champion Unit" -> type Unit, supertype Champion. "Rune" -> type Rune. */
+function typeOf(cardType) {
+  const raw = (cardType || []).join(' ').trim();
+  if (!raw || raw === 'None') return { type: '', supertype: null };
+  const parts = raw.split(/\s+/);
+  return {
+    type: parts[parts.length - 1],
+    supertype: parts.length > 1 ? parts.slice(0, -1).join(' ') : null,
+  };
+}
+
+/**
+ * TCGplayer writes "0" wherever a cost doesn't apply; Riftcodex writes null, and
+ * the app leans on that — the price/cost sorts deliberately sink cards with
+ * nothing to sort on, so a Rune claiming energy 0 would jump ahead of them.
+ * Mirrored from the real rows: Battlefields, Legends and Runes carry no stats at
+ * all, and `might` belongs to Units alone.
+ */
+function statsFor(type, attr) {
+  const none = { energy: null, might: null, power: null };
+  if (['Battlefield', 'Legend', 'Rune'].includes(type)) return none;
+
+  const num = (v) => (v == null || v === '' ? null : Number(v));
+  const zeroIsNothing = (v) => (num(v) ? num(v) : null);
+
+  return {
+    energy: num(attr.energyCost),
+    might: type === 'Unit' ? num(attr.might) : null,
+    power: zeroIsNothing(attr.powerCost),
+  };
+}
+
+function synthesise(product, id) {
+  const attr = product.customAttributes || {};
+  const { type, supertype } = typeOf(attr.cardType);
+  const domains = String(attr.domain || '')
+    .split(';')
+    .map((d) => d.trim().toLowerCase())
+    .filter((d) => d && d !== 'none');
+  const num = /^(\d+)/.exec(String(attr.number || ''));
+  const runeNum = /^R(\d+)/i.exec(String(attr.number || ''));
+  const description = plainText(attr.description);
+  const rarity = String(attr.rarityDbName || '').toLowerCase();
+
+  return {
+    id,
+    name: product.productName,
+    set_id: product.setCode,
+    collector_number: Number(num?.[1] ?? runeNum?.[1] ?? 0),
+    // Only the rune IDs carry a variant letter; numbered ones are accepted only
+    // in their plain "131/219" form.
+    variant: /-r\d+([a-z])$/.exec(id)?.[1] || '',
+    rarity: rarity === 'none' ? '' : rarity,
+    type,
+    supertype,
+    domains: domains.length ? domains : ['colorless'],
+    stats: statsFor(type, attr),
+    description,
+    flavor_text: attr.flavorText || null,
+    keywords: keywordsOf(description),
+    tags: attr.tag ? String(attr.tag).split(';').map((t) => t.trim()).filter(Boolean) : [],
+    orientation: 'portrait',
+    // TCGplayer's CDN answers 403 to anything it didn't serve the page for, so
+    // there is no art for these. The app shows a labelled placeholder instead.
+    image: '',
+    image_full: '',
+    artist: null,
+    tcgplayer_id: product.productId ? String(product.productId) : null,
+    alternate_art: /\(alternate art\)/i.test(product.productName),
+    printing: 1,
+    // Marks a card the app built itself rather than one Riftcodex served.
+    partial: true,
+  };
+}
+
+/**
+ * Adds cards TCGplayer lists and Riftcodex doesn't. Three guards, because a bad
+ * ID is worse than a missing card — collections are keyed by ID, so a synthetic
+ * card that collides with a real one silently rewrites what someone owns:
+ *
+ *  1. the ID has to come from a number shape we trust (see predictId)
+ *  2. it must not already belong to a real card
+ *  3. two products must not want the same ID
+ *
+ * On the current catalogue that admits 91 of 232 unmatched products, including
+ * every missing rune. The rest — Prize Wall metals, tokens, signature variants —
+ * are left out rather than guessed at.
+ */
+function supplement(cards, products) {
+  const knownSets = new Set(cards.map((c) => c.set_id));
+  const byProduct = new Set(cards.map((c) => String(c.tcgplayer_id)).filter(Boolean));
+  const byId = new Set(cards.map((c) => c.id));
+
+  const norm = (s) =>
+    String(s).toLowerCase().replace(/[,\-–—]/g, ' ').replace(/[^a-z0-9() ]/g, '').replace(/\s+/g, ' ').trim();
+  const byName = new Set(cards.map((c) => `${norm(c.name)}|${c.set_id}`));
+
+  const unmatched = products.filter(
+    (p) =>
+      !byProduct.has(String(p.productId)) &&
+      !byName.has(`${norm(p.productName)}|${p.setCode}`)
+  );
+
+  // Count first: an ID two products both claim is ambiguous, so neither gets it.
+  const wanted = new Map();
+  for (const p of unmatched) {
+    const id = predictId(p);
+    if (id) wanted.set(id, (wanted.get(id) || 0) + 1);
+  }
+
+  const added = [];
+  const skipped = { noId: 0, collision: 0, ambiguous: 0, unknownSet: 0 };
+
+  for (const p of unmatched) {
+    const id = predictId(p);
+    if (!id) { skipped.noId++; continue; }
+    if (!knownSets.has(p.setCode)) { skipped.unknownSet++; continue; }
+    if (byId.has(id)) { skipped.collision++; continue; }
+    if (wanted.get(id) > 1) { skipped.ambiguous++; continue; }
+    added.push(synthesise(p, id));
+    byId.add(id);
+  }
+
+  return { added, skipped, unmatched: unmatched.length };
+}
+
 async function main() {
   console.log('Syncing Riftbound cards from Riftcodex...');
 
@@ -176,14 +397,29 @@ async function main() {
       `(${collapsed} duplicate rows collapsed, ${suffixed} alternate printings kept)`
   );
 
-  const cards = unique
-    .map(normalize)
-    .sort(
-      (a, b) =>
-        a.set_id.localeCompare(b.set_id) ||
-        a.collector_number - b.collector_number ||
-        a.variant.localeCompare(b.variant)
+  console.log('Checking TCGplayer for cards Riftcodex is missing...');
+  let extra = [];
+  try {
+    const products = await fetchTcgProducts();
+    const { added, skipped, unmatched } = supplement(unique.map(normalize), products);
+    extra = added;
+    console.log(
+      `  ${products.length} products, ${unmatched} unmatched -> ${added.length} added ` +
+        `(skipped ${skipped.noId} unpredictable, ${skipped.collision} would collide, ` +
+        `${skipped.ambiguous} ambiguous, ${skipped.unknownSet} unknown set)`
     );
+  } catch (err) {
+    // A supplement is a bonus, not a dependency — a bad day at TCGplayer should
+    // still leave you with a complete Riftcodex sync.
+    console.warn(`  TCGplayer unavailable (${err.message}) — Riftcodex data only`);
+  }
+
+  const cards = [...unique.map(normalize), ...extra].sort(
+    (a, b) =>
+      a.set_id.localeCompare(b.set_id) ||
+      a.collector_number - b.collector_number ||
+      a.variant.localeCompare(b.variant)
+  );
 
   const counts = cards.reduce((acc, c) => ((acc[c.set_id] = (acc[c.set_id] || 0) + 1), acc), {});
 
