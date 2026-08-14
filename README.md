@@ -472,8 +472,15 @@ every one reproduces its real ID. On the current catalogue the guards admit 91
 of the 232, including all 54 missing runes. The 141 left out are Prize Wall
 metals whose IDs would have collided, tokens, and starred signature variants.
 
-Synthesised cards carry type, domains, rarity, costs and often rules text, but
-no art — TCGplayer's CDN refuses hotlinks — so the grid shows a labelled
+Synthesised cards carry type, domains, rarity, costs and often rules text.
+TCGplayer's CDN refuses hotlinks, so art comes from a third pass instead: dotgg,
+the catalogue behind [riftbound.gg](https://riftbound.gg) and the same one the
+riftbound.gg export already targets, publishes card images on an open CDN. Their
+ID scheme differs on variants and matching the wrong row would hang another
+printing's art on a card, so the lookup tries the specific forms first —
+`OGN-166a` for an alternate art, `UNL-229-STAR` for a signature — before the
+plain number. That illustrates 42 of the 91; the rest are Organized Play promos
+and Oversized cards dotgg files differently, and they keep a labelled
 placeholder that dims and brightens on ownership like a real image. Costs follow
 Riftcodex's convention rather than TCGplayer's zeros, or a Rune claiming energy 0
 would sort ahead of the cards the cost sorts deliberately sink. They're flagged

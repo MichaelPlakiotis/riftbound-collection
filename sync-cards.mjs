@@ -385,6 +385,80 @@ function supplement(cards, products) {
   return { added, skipped, unmatched: unmatched.length };
 }
 
+/* ---------------- art for the cards TCGplayer can't illustrate ---------------- */
+
+// riftbound.gg runs on dotgg, whose card API is public and serves art from its
+// own CDN. It's the same catalogue this app already targets for the riftbound.gg
+// export, so the ID scheme is one we're used to.
+const DOTGG = 'https://api.dotgg.gg/cgfw/getcards?game=riftbound';
+
+async function fetchDotgg() {
+  const res = await fetch(DOTGG, {
+    headers: {
+      accept: 'application/json',
+      referer: 'https://riftbound.gg/',
+      'user-agent': 'riftbound-collection/1.0 (personal collection tracker)',
+    },
+    signal: AbortSignal.timeout(40_000),
+  });
+  if (!res.ok) throw new Error(`dotgg HTTP ${res.status}`);
+  const rows = await res.json();
+  if (!Array.isArray(rows)) throw new Error('dotgg returned an unexpected shape');
+  return rows;
+}
+
+/**
+ * Our ID to dotgg's, best guess first. They file variants their own way and the
+ * differences are worth spelling out, because matching the wrong row would hang
+ * another printing's art on a card:
+ *
+ *   ogn-166a-298 -> OGN-166a      alternate art keeps the letter
+ *   unl-229*-219 -> UNL-229-STAR  our star is their -STAR
+ *   unl-r05      -> UNL-R05       runes, numbered the same way
+ *   ogn-166-298  -> OGN-166       plain
+ */
+function dotggCandidates(card) {
+  const set = card.set_id;
+  const seg = String(card.id).split('-')[1] || '';
+
+  const rune = /^r(\d+)([a-z]?)$/i.exec(seg);
+  if (rune) return [`${set}-R${rune[1].padStart(2, '0')}${rune[2] || ''}`];
+
+  const n = String(card.collector_number).padStart(3, '0');
+  const letter = (/^\d+([a-z])/i.exec(seg) || [])[1] || '';
+  const out = [];
+  if (/\*/.test(seg)) out.push(`${set}-${n}-STAR`);
+  if (letter) out.push(`${set}-${n}${letter}`);
+  out.push(`${set}-${n}`);
+  if (card.rarity === 'promo') out.push(`${set}-${n}-P`);
+  return out;
+}
+
+/**
+ * Fills in art for cards that have none — the ones built from TCGplayer, whose
+ * CDN answers 403 to anything it didn't serve the page for. Cards that already
+ * carry Riot's own art are left alone: it's the better image and it's already
+ * working.
+ */
+function addArt(cards, rows) {
+  const byId = new Map(rows.map((r) => [String(r.id).toUpperCase(), r]));
+  let filled = 0;
+
+  for (const card of cards) {
+    if (card.image) continue;
+    for (const cand of dotggCandidates(card)) {
+      const hit = byId.get(cand.toUpperCase());
+      if (hit?.image) {
+        card.image = hit.image;
+        card.image_full = hit.image;
+        filled++;
+        break;
+      }
+    }
+  }
+  return filled;
+}
+
 async function main() {
   console.log('Syncing Riftbound cards from Riftcodex...');
 
@@ -420,6 +494,17 @@ async function main() {
       a.collector_number - b.collector_number ||
       a.variant.localeCompare(b.variant)
   );
+
+  const artless = cards.filter((c) => !c.image).length;
+  if (artless) {
+    console.log(`Looking up art for ${artless} cards without any...`);
+    try {
+      const filled = addArt(cards, await fetchDotgg());
+      console.log(`  ${filled} illustrated, ${artless - filled} still without`);
+    } catch (err) {
+      console.warn(`  dotgg unavailable (${err.message}) — those cards stay art-less`);
+    }
+  }
 
   const counts = cards.reduce((acc, c) => ((acc[c.set_id] = (acc[c.set_id] || 0) + 1), acc), {});
 
