@@ -17,6 +17,6 @@
  * it did before accounts existed.
  */
 window.RIFTBOUND_SUPABASE = {
-  url: 'YOUR_PROJECT_URL',
-  anonKey: 'YOUR_ANON_KEY',
+  url: 'https://vrkxrrfxcmydfahughvk.supabase.co',
+  anonKey: 'sb_publishable_MO01UDmKpgCC5QMFYGfEyQ_oLLFYE0k',
 };
