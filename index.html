@@ -58,6 +58,9 @@
       </div>
       <button id="btn-import" class="btn" type="button">Import</button>
       <input id="file-import" type="file" accept="application/json" hidden>
+      <!-- cloud.js removes this button when no Supabase project is configured. -->
+      <button id="btn-account" class="btn btn-account" type="button"
+              title="Sign in to sync your collection">Sign in</button>
     </div>
 
     <div class="statline" id="statline"></div>
@@ -120,6 +123,48 @@
   <div class="pack-stage" id="pack-stage"></div>
 </dialog>
 
+<!-- Accounts are optional. The Supabase client itself is only fetched once
+     there's a session to restore or someone actually opens this dialog. -->
+<dialog id="auth-modal" class="auth-modal">
+  <form id="auth-form" class="auth-form">
+    <h2 id="auth-title">Sign in</h2>
+    <p class="auth-sub" id="auth-sub">Welcome back — your collection is waiting.</p>
+
+    <label class="auth-field">
+      <span>Email</span>
+      <input id="auth-email" type="email" autocomplete="email" required>
+    </label>
+    <label class="auth-field">
+      <span>Password</span>
+      <input id="auth-password" type="password" autocomplete="current-password"
+             required minlength="6">
+    </label>
+
+    <p class="auth-error" id="auth-error" hidden></p>
+
+    <div class="auth-actions">
+      <button id="auth-submit" class="btn btn-primary" type="submit">Sign in</button>
+      <button id="auth-cancel" class="btn btn-quiet" type="button">Cancel</button>
+    </div>
+
+    <p class="auth-switch">
+      <span id="auth-switch-text">New here?</span>
+      <button id="auth-switch" class="linkish" type="button">Create an account</button>
+    </p>
+  </form>
+
+  <div class="auth-signed" id="auth-signed" hidden>
+    <h2>Your account</h2>
+    <p class="auth-sub" id="auth-who"></p>
+    <p class="auth-note">Changes sync automatically. Signing out leaves this
+      device's copy untouched.</p>
+    <div class="auth-actions">
+      <button id="auth-signout" class="btn" type="button">Sign out</button>
+      <button id="auth-done" class="btn btn-quiet" type="button">Done</button>
+    </div>
+  </div>
+</dialog>
+
 <div id="toast" class="toast" hidden></div>
 
 <script src="data/cards.js"></script>
@@ -127,5 +172,7 @@
 <script src="deck.js"></script>
 <script src="pack.js"></script>
 <script src="app.js"></script>
+<script src="supabase-config.js"></script>
+<script src="cloud.js"></script>
 </body>
 </html>

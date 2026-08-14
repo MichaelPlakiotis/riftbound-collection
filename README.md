@@ -247,6 +247,14 @@ node sync-prices.mjs    # ~15 s — run this one whenever you want fresh prices
 Set names and release dates come from the API, so a new set needs no code
 change.
 
+Prices also refresh on their own: `.github/workflows/sync-prices.yml` runs
+`sync-prices.mjs` every day at 09:00 UTC and commits `data/prices.js` when the
+numbers actually moved. Both hosts deploy from `main`, so the commit *is* the
+publish step. It's a `workflow_dispatch` too, so the Actions tab has a button
+for an unscheduled run. A daily cadence also gives `meta.previousSync` and the
+per-card `p` field real meaning — the deltas in the UI become day-over-day
+movement instead of "since whenever I last remembered to run this".
+
 Your collection lives in `localStorage`, not in `cards.js`, so re-syncing never
 touches it. Quantities key off card ID, and IDs are stable across syncs — and
 identical between Riftcodex and RiftScribe, so even switching data source back
@@ -348,3 +356,60 @@ euros**, not a European market price. Cardmarket and TCGplayer genuinely differ
 per card, so a converted figure is the right number for "what is my collection
 worth" and the wrong one for "what will this cost me on Cardmarket". The picker's
 tooltip and the breakdown panel both name the rate and its date.
+
+## Accounts and cloud sync
+
+Optional, and off until configured. With no Supabase project wired up the site
+is exactly what it was: `localStorage`, no network, no account button — `cloud.js`
+removes the button and returns before fetching anything. Signing in adds a copy
+of the collection in Postgres on top of the local one; it never replaces the
+local-first behaviour.
+
+### Setting it up
+
+1. Create a project at [supabase.com](https://supabase.com) (the free tier is
+   plenty — this uses one small table).
+2. **SQL Editor → New query**, paste `supabase-schema.sql`, Run. That creates the
+   `collections` table and its Row Level Security policies.
+3. **Authentication → Sign In / Providers → Email**: leave Email enabled and turn
+   **Confirm email** *off*. Supabase's built-in mailer is rate-limited to a
+   handful of messages an hour, which turns a few friends signing up into a
+   support queue. With confirmation off, signup returns a session immediately.
+4. **Authentication → URL Configuration**: add every origin the site is served
+   from to **Redirect URLs** — the GitHub Pages URL *and* the Vercel one, plus
+   `http://localhost:*` if you open it locally.
+5. Copy the Project URL and the `anon` `public` key from **Settings → API** into
+   `supabase-config.js`, and commit.
+
+### On committing the anon key
+
+It's meant to be public. It identifies the project, not a person, and grants
+nothing by itself — every request still carries the signed-in user's token, and
+the policies in `supabase-schema.sql` make Postgres filter by `auth.uid()` before
+returning a row. The key to never commit is `service_role`, which bypasses RLS
+entirely.
+
+### How syncing resolves
+
+The first time a device signs in to an account it **merges**: local and cloud are
+two histories that both deserve to survive, so each card takes the larger
+quantity and either side's wishlist flag. That's what makes "I've been tracking
+on my laptop, now I'm signing in on my phone" do the obvious thing.
+
+After that the cloud is authoritative. A device that sees a newer `updated_at`
+than the one it last applied replaces its local copy wholesale. Merging on
+*every* sync would look safer and be worse — it can never represent a removal, so
+every card you ever sold would come back. The cost of the wholesale rule is that
+two devices editing simultaneously resolve last-write-wins, which is the right
+trade for a collection tracker.
+
+The account button carries a dot: green synced, gold saving, amber offline. An
+offline write isn't lost — it's in `localStorage` like always, and the next
+successful push carries it up.
+
+### What it costs at page load
+
+Nothing, unless you use it. `vendor/supabase.js` (the client, vendored so the
+site keeps its no-build-step, no-runtime-CDN shape) is injected on demand — only
+when a stored session needs restoring or someone opens the sign-in dialog. A
+visitor who never signs in fetches exactly what they always did.

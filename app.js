@@ -45,13 +45,40 @@ function load() {
 let saveTimer;
 function save() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(collection));
-    } catch (err) {
-      toast('Could not save — storage may be full');
-    }
-  }, 150);
+  saveTimer = setTimeout(persist, 150);
+}
+
+/**
+ * Writes the collection out now. `fromCloud` marks a write that *came from* the
+ * server, so sync doesn't echo it straight back as a fresh local change.
+ */
+function persist({ fromCloud = false } = {}) {
+  clearTimeout(saveTimer);
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(collection));
+  } catch (err) {
+    toast('Could not save — storage may be full');
+  }
+  if (!fromCloud) window.RiftboundCloud?.onLocalChange?.();
+}
+
+const KNOWN_IDS = new Set(CARDS.map((c) => c.id));
+
+/**
+ * Coerces arbitrary parsed JSON into the collection shape. Shared by the file
+ * importer and by cloud sync — neither should trust what it's handed, and both
+ * want unknown ids dropped rather than carried around forever.
+ */
+function sanitize(incoming) {
+  const clean = {};
+  let skipped = 0;
+  for (const [id, v] of Object.entries(incoming || {})) {
+    if (!KNOWN_IDS.has(id)) { skipped++; continue; }
+    const q = Math.min(99, Math.max(0, parseInt(v?.q, 10) || 0));
+    const w = !!v?.w;
+    if (q > 0 || w) clean[id] = { q, w };
+  }
+  return { clean, skipped };
 }
 
 /** UI preferences, kept apart from the collection so exports stay portable. */
@@ -978,15 +1005,7 @@ el('file-import').addEventListener('change', async (e) => {
     const incoming = data.collection ?? data;
     if (!incoming || typeof incoming !== 'object') throw new Error('bad shape');
 
-    const known = new Set(CARDS.map((c) => c.id));
-    const clean = {};
-    let skipped = 0;
-    for (const [id, v] of Object.entries(incoming)) {
-      if (!known.has(id)) { skipped++; continue; }
-      const q = Math.min(99, Math.max(0, parseInt(v?.q, 10) || 0));
-      const w = !!v?.w;
-      if (q > 0 || w) clean[id] = { q, w };
-    }
+    const { clean, skipped } = sanitize(incoming);
 
     const count = Object.keys(clean).length;
     if (!confirm(`Import ${count} card entries? This replaces your current collection.`)) return;
@@ -1624,6 +1643,25 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (t.hidden = true), 2600);
 }
+
+/* ---------------- cloud seam ---------------- */
+
+/**
+ * The whole surface cloud.js is allowed to touch. Keeping it to four functions
+ * means sync stays an add-on: delete cloud.js and the config file and the app is
+ * exactly the local-only tracker it started as.
+ */
+window.RiftboundApp = {
+  getCollection: () => collection,
+  /** Replaces the collection with server data and redraws. Never echoes back. */
+  applyCollection(next) {
+    collection = sanitize(next).clean;
+    persist({ fromCloud: true });
+    render();
+  },
+  sanitize: (incoming) => sanitize(incoming).clean,
+  toast,
+};
 
 /* ---------------- init ---------------- */
 
