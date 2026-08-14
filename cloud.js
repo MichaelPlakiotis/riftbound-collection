@@ -291,6 +291,9 @@
     } else {
       setMode('signin');
       form.reset();
+      // Belt and braces: a dialog reopened after a failed attempt should never
+      // present a disabled button.
+      setBusy(false);
     }
     modal.showModal();
     if (!signedIn) emailInput.focus();
@@ -345,6 +348,10 @@
         setBusy(false);
         return;
       }
+      // Must clear before closing: the guard at the top of this handler reads
+      // `busy`, so leaving it set makes every later submit a no-op — sign in,
+      // sign out, sign in again would silently do nothing until a page reload.
+      setBusy(false);
       modal.close();
       // onAuthStateChange does the rest.
     } catch (err) {
@@ -357,7 +364,9 @@
     clearTimeout(pushTimer);
     try {
       const c = await client();
-      await c.auth.signOut();
+      // 'local' signs this browser out. The default, 'global', revokes every
+      // session the account has — signing out on a phone would boot the laptop.
+      await c.auth.signOut({ scope: 'local' });
     } catch {
       /* a failed sign-out still clears locally below */
     }

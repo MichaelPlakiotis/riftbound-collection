@@ -1384,7 +1384,17 @@ main { padding: 16px 20px 60px; }
 
 /* A dot rather than a word: sync state matters when it's wrong, and the button
    is already carrying a name. Colour is backed up by the title attribute. */
-.btn-account.is-signed-in { display: inline-flex; align-items: center; gap: 7px; }
+/* Capped because email local-parts run long — the full address, and the sync
+   state the dot encodes, are both on the title attribute. */
+.btn-account.is-signed-in {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 15ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .btn-account.is-signed-in::before {
   content: '';
   width: 7px;
