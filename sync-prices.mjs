@@ -29,6 +29,26 @@ const FX = 'https://api.frankfurter.dev/v1/latest?base=USD&symbols=EUR,GBP';
 const POINTS = (productId) => `https://mpapi.tcgplayer.com/v2/product/${productId}/pricepoints`;
 const FOIL_CONCURRENCY = 6;
 
+// dotgg (the catalogue behind riftbound.gg) publishes Cardmarket figures beside
+// its own. Cards carry a dotgg_id from sync-cards.mjs, so the matching — which
+// has to cope with their different variant scheme — is already done.
+const DOTGG = 'https://api.dotgg.gg/cgfw/getcards?game=riftbound';
+
+async function fetchDotgg() {
+  const res = await fetch(DOTGG, {
+    headers: {
+      accept: 'application/json',
+      referer: 'https://riftbound.gg/',
+      'user-agent': 'riftbound-collection/1.0 (personal collection tracker)',
+    },
+    signal: AbortSignal.timeout(40_000),
+  });
+  if (!res.ok) throw new Error(`dotgg HTTP ${res.status}`);
+  const rows = await res.json();
+  if (!Array.isArray(rows)) throw new Error('dotgg returned an unexpected shape');
+  return rows;
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Runs `fn` over `items` with a fixed number of workers, preserving order. */
@@ -275,6 +295,47 @@ async function main() {
   });
   console.log(`\n  ${foiled} foil prices, ${foilCarried} carried forward`);
 
+  console.log('Fetching Cardmarket prices…');
+  let cmPriced = 0;
+  let cmFoilPriced = 0;
+  try {
+    const rows = await fetchDotgg();
+    const byId = new Map(rows.map((r) => [String(r.id).toUpperCase(), r]));
+    const num = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null;
+    };
+
+    for (const card of data.cards) {
+      const row = card.dotgg_id ? byId.get(String(card.dotgg_id).toUpperCase()) : null;
+      const entry = prices[card.id];
+      if (!row || !entry) continue;
+
+      const cm = num(row.cmPrice);
+      const cmf = num(row.cmFoilPrice);
+      if (cm != null) {
+        // Previous Cardmarket price, so EUR gets the same delta USD has.
+        const was = prevPrices[card.id]?.cm;
+        if (typeof was === 'number' && was > 0) entry.cmp = was;
+        entry.cm = cm;
+        cmPriced++;
+      }
+      if (cmf != null) {
+        entry.cmf = cmf;
+        cmFoilPriced++;
+      }
+    }
+    console.log(`  ${cmPriced} Cardmarket prices, ${cmFoilPriced} foil`);
+  } catch (err) {
+    // Carry the last sync's figures forward rather than emptying the EUR view.
+    for (const [id, entry] of Object.entries(prices)) {
+      const before = prevPrices[id];
+      if (typeof before?.cm === 'number') { entry.cm = before.cm; cmPriced++; }
+      if (typeof before?.cmf === 'number') { entry.cmf = before.cmf; cmFoilPriced++; }
+    }
+    console.warn(`  dotgg unavailable (${err.message}) — carried ${cmPriced} forward`);
+  }
+
   console.log('Fetching exchange rates…');
   // A rate from the last sync beats no rate at all — the conversion is labelled
   // with its own date in the UI, so a stale one is visible rather than silent.
@@ -294,6 +355,14 @@ async function main() {
     priced: matched,
     unpriced: unmatched,
     foilPriced: Object.values(prices).filter((p) => typeof p.f === 'number').length,
+    // Cardmarket figures are euros already — the app shows them as-is under EUR
+    // rather than converting a US price, which is a different number entirely.
+    cardmarket: {
+      source: 'Cardmarket via dotgg',
+      currency: 'EUR',
+      priced: Object.values(prices).filter((p) => typeof p.cm === 'number').length,
+      foilPriced: Object.values(prices).filter((p) => typeof p.cmf === 'number').length,
+    },
     ...(fx || {}),
   };
 

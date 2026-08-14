@@ -435,28 +435,34 @@ function dotggCandidates(card) {
 }
 
 /**
- * Fills in art for cards that have none — the ones built from TCGplayer, whose
- * CDN answers 403 to anything it didn't serve the page for. Cards that already
- * carry Riot's own art are left alone: it's the better image and it's already
- * working.
+ * Records each card's dotgg counterpart and fills art for the ones that have
+ * none — those built from TCGplayer, whose CDN answers 403 to anything it didn't
+ * serve the page for. Cards already carrying Riot's own art keep it: it's the
+ * better image and it already works.
+ *
+ * The ID is stored rather than just consumed, so sync-prices.mjs can pick up
+ * Cardmarket figures for the same card without repeating this matching.
  */
-function addArt(cards, rows) {
+function linkDotgg(cards, rows) {
   const byId = new Map(rows.map((r) => [String(r.id).toUpperCase(), r]));
-  let filled = 0;
+  let linked = 0;
+  let illustrated = 0;
 
   for (const card of cards) {
-    if (card.image) continue;
     for (const cand of dotggCandidates(card)) {
       const hit = byId.get(cand.toUpperCase());
-      if (hit?.image) {
+      if (!hit) continue;
+      card.dotgg_id = hit.id;
+      linked++;
+      if (!card.image && hit.image) {
         card.image = hit.image;
         card.image_full = hit.image;
-        filled++;
-        break;
+        illustrated++;
       }
+      break;
     }
   }
-  return filled;
+  return { linked, illustrated };
 }
 
 async function main() {
@@ -496,14 +502,16 @@ async function main() {
   );
 
   const artless = cards.filter((c) => !c.image).length;
-  if (artless) {
-    console.log(`Looking up art for ${artless} cards without any...`);
-    try {
-      const filled = addArt(cards, await fetchDotgg());
-      console.log(`  ${filled} illustrated, ${artless - filled} still without`);
-    } catch (err) {
-      console.warn(`  dotgg unavailable (${err.message}) — those cards stay art-less`);
-    }
+  console.log(`Matching against dotgg (${artless} cards still need art)...`);
+  try {
+    const { linked, illustrated } = linkDotgg(cards, await fetchDotgg());
+    console.log(
+      `  ${linked} cards linked, ${illustrated} illustrated, ${artless - illustrated} still art-less`
+    );
+  } catch (err) {
+    // Art and Cardmarket prices are both bonuses; a bad day at dotgg costs the
+    // sync nothing that Riftcodex already provided.
+    console.warn(`  dotgg unavailable (${err.message}) — no art fill, no Cardmarket link`);
   }
 
   const counts = cards.reduce((acc, c) => ((acc[c.set_id] = (acc[c.set_id] || 0) + 1), acc), {});

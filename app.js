@@ -19,10 +19,34 @@ const PRICE_DATA = window.RIFTBOUND_PRICES || null;
 const PRICES = PRICE_DATA?.prices || {};
 const PRICE_META = PRICE_DATA?.meta || null;
 
-const priceOf = (id) => (typeof PRICES[id]?.m === 'number' ? PRICES[id].m : null);
-const prevPriceOf = (id) => (typeof PRICES[id]?.p === 'number' ? PRICES[id].p : null);
-/** Foil market price. Falls back to the normal one so a foil is never valued at nothing. */
-const foilPriceOf = (id) => (typeof PRICES[id]?.f === 'number' ? PRICES[id].f : priceOf(id));
+/**
+ * Two markets, not one currency in two units. TCGplayer sells in US dollars and
+ * Cardmarket in euros, and the same card genuinely differs between them — often
+ * far past any exchange rate. So EUR shows Cardmarket's own figure where there
+ * is one, and USD/GBP stay TCGplayer converted at the stored ECB rate.
+ *
+ * Every accessor below therefore returns a number *already in the selected
+ * currency*, and money() only formats. Mixing a converted price into a
+ * Cardmarket view would be the one genuinely wrong thing to do.
+ */
+const onCardmarket = () => currency === 'EUR' && !!PRICE_META?.cardmarket;
+
+/** 'cm' when this card's figure is a real Cardmarket one, 'tcg' otherwise. */
+const priceSourceOf = (id) =>
+  onCardmarket() && typeof PRICES[id]?.cm === 'number' ? 'cm' : 'tcg';
+
+/** Reads one of the price fields and puts it in the selected currency. */
+function inCurrency(id, cmKey, usdKey) {
+  const e = PRICES[id];
+  if (!e) return null;
+  if (onCardmarket() && typeof e[cmKey] === 'number') return e[cmKey];
+  return typeof e[usdKey] === 'number' ? e[usdKey] * RATES[currency] : null;
+}
+
+const priceOf = (id) => inCurrency(id, 'cm', 'm');
+const prevPriceOf = (id) => inCurrency(id, 'cmp', 'p');
+/** Foil price. Falls back to the normal one so a foil is never valued at nothing. */
+const foilPriceOf = (id) => inCurrency(id, 'cmf', 'f') ?? priceOf(id);
 
 // Promo sets (organized play, judge, general promos) aren't part of normal set
 // completion, so they're excluded from the denominator and hidden by default.
@@ -131,9 +155,12 @@ const fmt = (code, decimals) =>
     maximumFractionDigits: decimals,
   }));
 
-/** Formats a USD figure in whichever currency is selected. */
-function money(usd) {
-  const v = usd * RATES[currency];
+/**
+ * Formats a figure that is already in the selected currency — the price
+ * accessors convert (or don't) at the point they read the data, since a
+ * Cardmarket euro must never be multiplied by an exchange rate.
+ */
+function money(v) {
   // Past a thousand the cents are noise on a figure that moves daily.
   return fmt(currency, v >= 1000 ? 0 : 2).format(v);
 }
@@ -313,12 +340,16 @@ function priceHTML(c, q, f = 0) {
   const stack =
     copies > 1 ? `<span class="stack" title="${esc(stackTitle)}">${money(worth)}</span>` : '';
 
-  const foilNote =
-    typeof PRICES[c.id]?.f === 'number'
-      ? `<span class="price-foil" title="TCGplayer foil market price">${money(PRICES[c.id].f)}✦</span>`
-      : '';
+  // Only shown when the selected market quotes a foil of its own, rather than
+  // repeating the normal price with a sparkle on it.
+  const cm = priceSourceOf(c.id) === 'cm';
+  const ownFoil = typeof PRICES[c.id]?.[cm ? 'cmf' : 'f'] === 'number';
+  const market = cm ? 'Cardmarket' : 'TCGplayer';
+  const foilNote = ownFoil
+    ? `<span class="price-foil" title="${market} foil price">${money(foilPriceOf(c.id))}✦</span>`
+    : '';
 
-  return `<div class="card-price"><span class="price" title="TCGplayer market price, ${esc(
+  return `<div class="card-price"><span class="price" title="${market} price, ${esc(
     PRICE_META.synced
   )}">${money(p)}</span>${delta}${foilNote}${stack}</div>`;
 }
@@ -443,6 +474,8 @@ function collectionValue() {
   let total = 0;
   let priced = 0;
   let unpriced = 0;
+  // Cards the selected market doesn't list, valued at a converted US price.
+  let converted = 0;
   const lines = [];
 
   for (const c of CARDS) {
@@ -456,6 +489,12 @@ function collectionValue() {
       continue;
     }
     priced += copies;
+    // Counted per printing: Cardmarket can list a card's normal copy and not its
+    // foil, so a single card can be partly quoted and partly converted.
+    if (onCardmarket()) {
+      if (priceSourceOf(c.id) !== 'cm') converted += q;
+      if (typeof PRICES[c.id]?.cmf !== 'number') converted += f;
+    }
     // Foils carry their own market price, so a line is the two stacks added.
     const fp = foilPriceOf(c.id) ?? p;
     const line = p * q + fp * f;
@@ -466,7 +505,7 @@ function collectionValue() {
   }
 
   lines.sort((a, b) => b.line - a.line);
-  return { total, priced, unpriced, lines };
+  return { total, priced, unpriced, converted, lines };
 }
 
 function renderStats() {
@@ -487,8 +526,12 @@ function renderStats() {
   const toggleHTML = val
     ? `<button type="button" class="stat-value" id="stat-toggle" aria-expanded="${open}"
           aria-controls="stats-panel"
-          title="TCGplayer market value of every copy you own${
+          title="${onCardmarket() ? 'Cardmarket' : 'TCGplayer'} value of every copy you own${
             val.unpriced ? ` · ${val.unpriced} copies have no price data` : ''
+          }${
+            onCardmarket() && val.converted
+              ? ` · ${val.converted} priced from TCGplayer instead, converted, because Cardmarket doesn't list them`
+              : ''
           }. Click for set progress and the breakdown.">
          <span class="stat-value-label">Collection worth</span>
          <span class="stat-value-num">${money(val.total)}</span>
@@ -503,11 +546,19 @@ function renderStats() {
   // Only worth offering when the price file carries a rate to convert with.
   const currencyHTML =
     CURRENCY_CODES.length > 1
-      ? `<select id="cur-sel" class="sel sel-cur" aria-label="Display currency"
-            title="Prices come from TCGplayer in US dollars${
-              PRICE_META.ratesDate
-                ? `. Other currencies are converted at the rate of ${esc(PRICE_META.ratesDate)}, not sourced from a European marketplace`
-                : ''
+      ? `<select id="cur-sel" class="sel sel-cur" aria-label="Display market and currency"
+            title="${
+              PRICE_META.cardmarket
+                ? `EUR shows Cardmarket's own European prices (${esc(PRICE_META.cardmarket.priced)} cards). USD and GBP show TCGplayer's US prices${
+                    PRICE_META.ratesDate
+                      ? `, GBP converted at the rate of ${esc(PRICE_META.ratesDate)}`
+                      : ''
+                  }. The two markets genuinely differ — this is a change of market, not just of units`
+                : `Prices come from TCGplayer in US dollars${
+                    PRICE_META.ratesDate
+                      ? `. Other currencies are converted at the rate of ${esc(PRICE_META.ratesDate)}, not sourced from a European marketplace`
+                      : ''
+                  }`
             }">${CURRENCY_CODES.map(
               (c) =>
                 `<option value="${c}"${c === currency ? ' selected' : ''}>${c} ${CURRENCIES[c]}</option>`
@@ -592,11 +643,21 @@ function valuePanelHTML(val) {
           ${val.priced.toLocaleString('en-US')} copies priced${
             val.unpriced ? ` · ${val.unpriced} with no sales data` : ''
           }<br>
-          TCGplayer market, ${esc(PRICE_META.synced)}${
-            currency === 'USD'
-              ? ''
-              : `<br>Converted from USD at ${RATES[currency]} ${esc(currency)}/USD${
-                  PRICE_META.ratesDate ? `, ${esc(PRICE_META.ratesDate)}` : ''
+          ${
+            onCardmarket()
+              ? `Cardmarket, ${esc(PRICE_META.synced)} — European prices, not converted${
+                  val.converted
+                    ? `<br>${val.converted} ${
+                        val.converted === 1 ? 'copy is' : 'copies are'
+                      } valued at a converted TCGplayer price, having no Cardmarket listing`
+                    : ''
+                }`
+              : `TCGplayer market, ${esc(PRICE_META.synced)}${
+                  currency === 'USD'
+                    ? ''
+                    : `<br>Converted from USD at ${RATES[currency]} ${esc(currency)}/USD${
+                        PRICE_META.ratesDate ? `, ${esc(PRICE_META.ratesDate)}` : ''
+                      }`
                 }`
           }
         </span>
@@ -916,10 +977,11 @@ const EXPORT_FORMATS = {
         'Rarity', 'Type', 'Domains', `Unit Price (${currency})`, `Total Price (${currency})`, 'Name',
       ];
       const lines = printingRows(rows).map((r) => {
-        // Each row is priced as the printing it actually is.
-        const usd = r.foil ? foilPriceOf(r.card.id) : priceOf(r.card.id);
-        const unit = usd == null ? '' : (usd * RATES[currency]).toFixed(2);
-        const total = usd == null ? '' : (usd * RATES[currency] * r.qty).toFixed(2);
+        // Each row is priced as the printing it actually is. The accessors
+        // already answer in the selected currency, so there's nothing to convert.
+        const p = r.foil ? foilPriceOf(r.card.id) : priceOf(r.card.id);
+        const unit = p == null ? '' : p.toFixed(2);
+        const total = p == null ? '' : (p * r.qty).toFixed(2);
         return [
           dotggId(r.card), r.card.set_id, setNameOf(r.card.set_id), cardNo(r.card),
           r.qty, r.foil ? 'yes' : 'no', r.w ? 'yes' : 'no',

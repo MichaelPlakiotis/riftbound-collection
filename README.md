@@ -485,3 +485,34 @@ placeholder that dims and brightens on ownership like a real image. Costs follow
 Riftcodex's convention rather than TCGplayer's zeros, or a Rune claiming energy 0
 would sort ahead of the cards the cost sorts deliberately sink. They're flagged
 `partial: true`, and a real Riftcodex row takes over whenever one appears.
+
+## Two markets, not one currency
+
+TCGplayer sells in US dollars and Cardmarket in euros, and the same card
+genuinely differs between them — often far past any exchange rate. Ahri,
+Nine-Tailed Fox (Signature) is $3,420 on TCGplayer and €1,350 on Cardmarket;
+converting the dollar figure at the ECB rate would claim €2,957, overstating it
+by about €1,600.
+
+So the currency picker changes **market**, not just units:
+
+| Choice | Source |
+| --- | --- |
+| USD | TCGplayer, as sold |
+| EUR | **Cardmarket's own European prices**, not converted |
+| GBP | TCGplayer, converted at the stored ECB rate |
+
+Cardmarket figures come from dotgg, which publishes them beside its own
+catalogue. That closes the gap the price section below describes: with real
+European prices, EUR is now the right number for "what will this cost me on
+Cardmarket", where before it was only ever a US price wearing a euro sign.
+
+Coverage isn't total — about 1,190 of our cards carry a Cardmarket price and
+1,150 a Cardmarket foil price. Anything Cardmarket doesn't list falls back to a
+converted TCGplayer figure, and the worth panel says how many copies that
+applies to rather than blending the two silently. The count is per printing,
+because Cardmarket often lists a card's normal copy and not its foil.
+
+The consequence worth knowing: **collection worth in EUR and in USD will not
+reconcile at any exchange rate**, because they are answers to different
+questions. That's the point of it.
