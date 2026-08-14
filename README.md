@@ -378,16 +378,20 @@ local-first behaviour.
 4. **Authentication → URL Configuration**: add every origin the site is served
    from to **Redirect URLs** — the GitHub Pages URL *and* the Vercel one, plus
    `http://localhost:*` if you open it locally.
-5. Copy the Project URL and the `anon` `public` key from **Settings → API** into
-   `supabase-config.js`, and commit.
+5. Copy the Project URL and the browser-safe key from **Settings → API** into
+   `supabase-config.js`, and commit. Depending on how new the project is, that
+   key is shown either as **anon `public`** (a JWT starting `eyJ`) or as
+   **Publishable key** (starting `sb_publishable_`) under **Settings → API
+   Keys**; the older `anon` key lives under that page's **Legacy API Keys** tab.
+   The two are interchangeable here — same privileges, same RLS behaviour.
 
 ### On committing the anon key
 
 It's meant to be public. It identifies the project, not a person, and grants
 nothing by itself — every request still carries the signed-in user's token, and
 the policies in `supabase-schema.sql` make Postgres filter by `auth.uid()` before
-returning a row. The key to never commit is `service_role`, which bypasses RLS
-entirely.
+returning a row. The keys to never commit are `service_role` and `sb_secret_…`,
+which bypass RLS entirely.
 
 ### How syncing resolves
 
