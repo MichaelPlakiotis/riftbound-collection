@@ -370,7 +370,7 @@ function cardHTML(c) {
 
   return `
     <article class="card ${copies > 0 ? 'is-owned' : ''} ${w ? 'is-wish' : ''}" data-id="${esc(c.id)}">
-      <div class="card-img">
+      <div class="card-img" data-act="detail" title="${esc(c.name)} — click for details">
         ${
           img
             ? `<img src="${esc(img)}" alt="${esc(c.name)}" loading="lazy" decoding="async">`
@@ -388,7 +388,10 @@ function cardHTML(c) {
                 aria-pressed="${w}">${w ? '★' : '☆'}</button>
       </div>
       <div class="card-body">
-        <div class="card-name" title="${esc(c.description || c.name)}">${esc(c.name)}</div>
+        <!-- A real button, so the detail view has a keyboard route in: the image
+             above it is the obvious click target but can't take focus. -->
+        <button class="card-name" type="button" data-act="detail"
+                title="${esc(c.description || c.name)}">${esc(c.name)}</button>
         <div class="card-meta">
           <span class="dots">${dots}</span>
           <span style="color:var(--r-${esc(c.rarity)}, #7d8896)">${esc(c.rarity)}</span>
@@ -673,6 +676,293 @@ function valuePanelHTML(val) {
     </div>`;
 }
 
+/* ---------------- card detail ---------------- */
+
+/**
+ * Riftcodex ships rules text as one unbroken run carrying the game's own inline
+ * codes: `:rb_energy_3:` for a cost, `:rb_rune_calm:` for a coloured rune,
+ * `:rb_might:` and `:rb_exhaust:` for the two loose symbols, `[Keyword]` for
+ * keywords and `[&gt;]` for the arrow that introduces a levelled effect. There
+ * is no separator between abilities at all — a reminder text's closing bracket
+ * runs straight into the next sentence — so the paragraph breaks have to be
+ * inferred before any of it reads as rules text.
+ */
+
+/**
+ * Riftcodex leaves a couple of HTML entities in the text it publishes — `&gt;`
+ * on the 122 cards with a levelled effect, `&quot;` on 24 — so they have to be
+ * decoded back to characters before the text is escaped again for display.
+ * Ampersand last, or `&amp;gt;` would decode twice.
+ */
+const decodeEntities = (s) =>
+  s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+
+/** `[>]` and `[>>]` are arrows into a levelled effect, not keywords. Keyed on
+ *  the escaped forms, which is what the bracket pass below is matching. */
+const RULES_ARROWS = { '&gt;': '→', '&gt;&gt;': '⇒' };
+
+const SYMBOLS = {
+  ':rb_might:': '<span class="sym sym-might" title="Might">✦</span>',
+  ':rb_exhaust:': '<span class="sym sym-exhaust" title="Exhaust">⟳</span>',
+};
+
+function symbolHTML(token) {
+  if (SYMBOLS[token]) return SYMBOLS[token];
+
+  const energy = /^:rb_energy_(\d+):$/.exec(token);
+  if (energy) return `<span class="sym sym-energy" title="${energy[1]} Energy">${energy[1]}</span>`;
+
+  const rune = /^:rb_rune_([a-z]+):$/.exec(token);
+  if (rune) {
+    // Rainbow means "a rune of any domain", so it gets every domain colour
+    // rather than one of them.
+    const rainbow = rune[1] === 'rainbow';
+    const style = rainbow
+      ? 'background:conic-gradient(var(--f-fury),var(--f-order),var(--f-body),' +
+        'var(--f-calm),var(--f-mind),var(--f-chaos),var(--f-fury))'
+      : `background:var(--f-${esc(rune[1])}, var(--f-colorless))`;
+    return `<span class="sym sym-rune" style="${style}" title="${
+      rainbow ? 'Rune of any domain' : `${esc(titleCase(rune[1]))} rune`
+    }"></span>`;
+  }
+
+  // An unknown code is shown as its bare word rather than swallowed: a future
+  // set's symbol should still read as something rather than vanish.
+  return `<span class="sym sym-text">${esc(token.replace(/^:rb_|:$/g, '').replace(/_/g, ' '))}</span>`;
+}
+
+function rulesHTML(text) {
+  if (!text) return '';
+
+  let t = esc(decodeEntities(text))
+    // A closing bracket that runs straight into the next word ends an ability.
+    .replace(/\)(?=[^\s)])/g, ')\n')
+    // …as does a sentence or a reminder immediately followed by a new keyword.
+    // `[Level 3][&gt;]` is spared because its `[` follows a `]`, not a stop.
+    .replace(/([.)])\s*(?=\[)/g, '$1\n');
+
+  // Reminder text is the game restating a keyword; dim it so the actual rules
+  // stand out. Done before the bracket pass, whose markup contains no brackets.
+  t = t.replace(/\(([^()]*)\)/g, '<i class="rules-note">($1)</i>');
+
+  t = t.replace(/\[([^\][]{1,24})\]/g, (whole, inner) =>
+    RULES_ARROWS[inner]
+      ? `<span class="rules-arrow">${RULES_ARROWS[inner]}</span>`
+      : `<b class="rules-kw">${inner}</b>`
+  );
+
+  t = t.replace(/:rb_[a-z0-9_]+:/g, symbolHTML);
+
+  return t
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => `<p>${line}</p>`)
+    .join('');
+}
+
+/**
+ * Cardmarket's Riftbound category, searched by name.
+ *
+ * Their product search is token based, which makes the punctuation between a
+ * champion and their title the one thing worth removing: our catalogue writes
+ * both `Vi - Destructive` and `Kai'Sa, Survivor` depending on the set, and
+ * neither separator is certain to be the one Cardmarket printed. Sending
+ * `Vi Destructive` matches either way.
+ *
+ * The exact query string can't be verified from here — Cardmarket answers
+ * automated requests with a 403 — so this is built to fail softly: a name that
+ * finds nothing still lands on their Riftbound search page, not a 404.
+ */
+const cardmarketUrl = (card) =>
+  'https://www.cardmarket.com/en/Riftbound/Products/Search?searchString=' +
+  encodeURIComponent(plainName(card).replace(/\s*[,\-–—]\s*/g, ' '));
+
+/**
+ * TCGplayer, where the dollar prices come from. Cards carry their product id,
+ * so this is an exact link; the few synthesised from the search feed without
+ * one fall back to a name search.
+ */
+const tcgplayerUrl = (card) =>
+  card.tcgplayer_id
+    ? `https://www.tcgplayer.com/product/${encodeURIComponent(card.tcgplayer_id)}`
+    : `https://www.tcgplayer.com/search/riftbound-league-of-legends-trading-card-game/product` +
+      `?q=${encodeURIComponent(plainName(card))}`;
+
+const cardModal = el('card-modal');
+let detailId = null;
+
+const chips = (label, values) =>
+  values?.length
+    ? `<div class="detail-chips"><span class="detail-chips-label">${esc(label)}</span>${values
+        .map((v) => `<span class="chip">${esc(titleCase(v))}</span>`)
+        .join('')}</div>`
+    : '';
+
+/** Energy / Might / Power, skipping the ones this card type doesn't print. */
+function statPills(card) {
+  const pills = [
+    ['Energy', card.stats.energy],
+    ['Might', card.stats.might],
+    ['Power', card.stats.power],
+  ].filter(([, v]) => v != null);
+  if (!pills.length) return '';
+  return `<div class="detail-stats">${pills
+    .map(
+      ([k, v]) =>
+        `<div class="detail-stat"><b>${esc(v)}</b><span>${esc(k)}</span></div>`
+    )
+    .join('')}</div>`;
+}
+
+/** Both markets side by side, each labelled with where the figure came from. */
+function detailPrices(card) {
+  if (!PRICE_DATA) return '';
+  const p = priceOf(card.id);
+  if (p == null) {
+    return `<div class="detail-prices"><span class="detail-price none">No sales data for
+      this printing</span></div>`;
+  }
+  const cm = priceSourceOf(card.id) === 'cm';
+  const market = cm ? 'Cardmarket' : 'TCGplayer';
+  const fp = typeof PRICES[card.id]?.[cm ? 'cmf' : 'f'] === 'number' ? foilPriceOf(card.id) : null;
+  const was = prevPriceOf(card.id);
+  const pct = was > 0 ? Math.round(((p - was) / was) * 100) : 0;
+
+  return `<div class="detail-prices">
+    <div class="detail-price"><b>${money(p)}</b><span>${esc(market)} normal</span></div>
+    ${fp == null ? '' : `<div class="detail-price"><b>${money(fp)}✦</b><span>${esc(market)} foil</span></div>`}
+    ${
+      Math.abs(pct) >= 3 && Math.abs(p - was) >= 0.05
+        ? `<div class="detail-price"><b class="delta ${pct > 0 ? 'up' : 'down'}">${
+            pct > 0 ? '↑' : '↓'
+          }${Math.abs(pct)}%</b><span>since ${esc(PRICE_META.previousSync || 'last sync')}</span></div>`
+        : ''
+    }
+  </div>`;
+}
+
+function renderCardDetail() {
+  const card = CARDS.find((c) => c.id === detailId);
+  const body = el('card-modal-body');
+  if (!card) {
+    body.innerHTML = '';
+    return;
+  }
+
+  const q = qtyOf(card.id);
+  const f = foilOf(card.id);
+  const w = wishOf(card.id);
+  const img = card.image_full || card.image || '';
+  const num = String(card.collector_number).padStart(3, '0') + (card.variant || '');
+  const typeLine = [card.supertype, card.type].filter(Boolean).join(' ');
+
+  body.innerHTML = `
+    <button class="detail-close icon-btn" type="button" data-detail="close" aria-label="Close">✕</button>
+
+    <div class="detail-art">
+      ${
+        img
+          ? `<img src="${esc(img)}" alt="${esc(card.name)}" decoding="async">`
+          : `<div class="card-noart"><span class="noart-name">${esc(card.name)}</span>
+               <span class="noart-note">no art yet</span></div>`
+      }
+    </div>
+
+    <div class="detail-info">
+      <h2 class="detail-name">${esc(card.name)}</h2>
+      <p class="detail-line">
+        <span class="dots">${domainDots(card)}</span>
+        <span>${esc(typeLine)}</span>
+        <span class="detail-sep">·</span>
+        <span style="color:var(--r-${esc(card.rarity)}, var(--text-dim))">${esc(titleCase(card.rarity))}</span>
+        <span class="detail-sep">·</span>
+        <span>${esc(setNameOf(card.set_id))} ${esc(card.set_id)}-${esc(num)}</span>
+      </p>
+
+      ${statPills(card)}
+      ${chips('Keywords', card.keywords)}
+      ${chips('Tags', card.tags)}
+
+      ${card.description ? `<div class="detail-rules">${rulesHTML(card.description)}</div>` : ''}
+      ${card.flavor_text ? `<p class="detail-flavor">${esc(card.flavor_text)}</p>` : ''}
+      ${card.artist ? `<p class="detail-artist">Art by ${esc(card.artist)}</p>` : ''}
+
+      ${detailPrices(card)}
+
+      <div class="detail-own">
+        <div class="stepper">
+          <button type="button" data-detail="dec" aria-label="Remove one" ${q === 0 ? 'disabled' : ''}>−</button>
+          <input type="number" min="0" max="99" value="${q}" data-detail="qty" aria-label="Copies owned">
+          <button type="button" data-detail="inc" aria-label="Add one">+</button>
+        </div>
+        <div class="stepper stepper-foil" title="Foil copies">
+          <button type="button" data-detail="fdec" aria-label="Remove one foil" ${f === 0 ? 'disabled' : ''}>−</button>
+          <input type="number" min="0" max="99" value="${f}" data-detail="fqty" aria-label="Foil copies owned">
+          <button type="button" data-detail="finc" aria-label="Add one foil">+</button>
+          <span class="foil-tag" aria-hidden="true">✦</span>
+        </div>
+        <button class="btn btn-quiet detail-wish ${w ? 'on' : ''}" type="button"
+                data-detail="wish" aria-pressed="${w}">${w ? '★ Wishlisted' : '☆ Wishlist'}</button>
+      </div>
+
+      <div class="detail-links">
+        <a class="btn" href="${esc(cardmarketUrl(card))}" target="_blank" rel="noopener noreferrer">
+          Cardmarket ↗</a>
+        <a class="btn btn-quiet" href="${esc(tcgplayerUrl(card))}" target="_blank" rel="noopener noreferrer">
+          TCGplayer ↗</a>
+      </div>
+    </div>`;
+}
+
+function openCardDetail(id) {
+  if (!CARDS.some((c) => c.id === id)) return;
+  detailId = id;
+  renderCardDetail();
+  cardModal.showModal();
+}
+
+cardModal.addEventListener('click', (e) => {
+  if (e.target === cardModal) return cardModal.close();
+
+  const btn = e.target.closest('[data-detail]');
+  if (!btn || btn.tagName === 'INPUT' || !detailId) return;
+
+  const id = detailId;
+  const act = btn.dataset.detail;
+  if (act === 'close') return cardModal.close();
+  if (act === 'inc') setEntry(id, { q: qtyOf(id) + 1 });
+  else if (act === 'dec') setEntry(id, { q: qtyOf(id) - 1 });
+  else if (act === 'finc') setEntry(id, { f: foilOf(id) + 1 });
+  else if (act === 'fdec') setEntry(id, { f: foilOf(id) - 1 });
+  else if (act === 'wish') setEntry(id, { w: !wishOf(id) });
+  else return;
+
+  renderCardDetail();
+  // The grid is still behind the dialog, so its tile has to keep up. It may not
+  // be rendered at all — a card opened from a suggested deck can sit outside
+  // the current filters — which refreshCard already treats as nothing to do.
+  refreshCard(id);
+});
+
+cardModal.addEventListener('change', (e) => {
+  const input = e.target.closest('[data-detail="qty"], [data-detail="fqty"]');
+  if (!input || !detailId) return;
+  const n = Math.min(99, Math.max(0, parseInt(input.value, 10) || 0));
+  setEntry(detailId, input.dataset.detail === 'fqty' ? { f: n } : { q: n });
+  renderCardDetail();
+  refreshCard(detailId);
+});
+
+cardModal.addEventListener('close', () => {
+  detailId = null;
+});
+
 /* ---------------- events ---------------- */
 
 grid.addEventListener('click', (e) => {
@@ -682,6 +972,7 @@ grid.addEventListener('click', (e) => {
   if (!id) return;
 
   const act = btn.dataset.act;
+  if (act === 'detail') return openCardDetail(id);
   if (act === 'inc') setEntry(id, { q: qtyOf(id) + 1 });
   else if (act === 'dec') setEntry(id, { q: qtyOf(id) - 1 });
   else if (act === 'finc') setEntry(id, { f: foilOf(id) + 1 });
@@ -717,7 +1008,7 @@ el('search').addEventListener('input', (e) => {
 document.addEventListener('keydown', (e) => {
   const search = el('search');
   // The dialogs trap focus; leave the browser's own find bar alone in there.
-  if (deckModal.open || packModal.open) return;
+  if (deckModal.open || packModal.open || cardModal.open) return;
 
   if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key?.toLowerCase() === 'f') {
     e.preventDefault();
@@ -832,7 +1123,10 @@ document.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   // An open export menu takes the Escape first — one press shouldn't dismiss
   // both it and the panel it's sitting in.
-  if (e.key === 'Escape' && menuOpen() && !exportOpen() && !deckModal.open && !packModal.open) {
+  if (
+    e.key === 'Escape' && menuOpen() && !exportOpen() &&
+    !deckModal.open && !packModal.open && !cardModal.open
+  ) {
     setMenu(false);
   }
 });
@@ -1204,7 +1498,8 @@ function deckRow(pick) {
     <li class="deck-row">
       <span class="deck-count">${pick.count}×</span>
       <img class="deck-thumb" src="${esc(c.image || '')}" alt="" loading="lazy" decoding="async">
-      <span class="deck-row-name">${esc(pick.name)}</span>
+      <button class="deck-row-name" type="button" data-card="${esc(c.id)}"
+              title="Card details">${esc(pick.name)}</button>
       <span class="deck-dots">${domainDots(c)}</span>
       <span class="deck-energy">${
         energy == null ? '' : `<b title="Energy cost">${energy}</b>`
@@ -1259,6 +1554,25 @@ function renderDeck() {
     ? `<p class="deck-status ok">Legal 40-card deck — every rule checks out.</p>`
     : `<ul class="deck-status warn">${deck.issues.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>`;
 
+  /* The plan the generator settled on, with the two halves of each theme shown
+   * separately — a lopsided pair is the thing worth knowing, since it means the
+   * collection could only supply one end of the loop. */
+  const themes = (deck.themes || []).length
+    ? `<div class="deck-themes">
+        <span class="deck-themes-label">Built around</span>
+        ${deck.themes
+          .map(
+            (t) =>
+              `<span class="deck-theme" title="${t.enablers} card${
+                t.enablers === 1 ? '' : 's'
+              } that set it up, ${t.payoffs} that pay it off">${esc(t.label)}
+               <b>${t.enablers}/${t.payoffs}</b></span>`
+          )
+          .join('')}
+      </div>`
+    : `<p class="deck-themes-none">No synergy runs deep enough in your collection to
+        build around yet — this is your best cards, shaped to the curve.</p>`;
+
   const main = deck.main.filter((p) => !p.chosen);
   const of = (t) => main.filter((p) => p.entry.card.type === t);
 
@@ -1271,6 +1585,7 @@ function renderDeck() {
       ${PRICE_DATA ? `<div><b class="pct">${money(deck.value)}</b> deck value</div>` : ''}
     </div>
     ${status}
+    ${themes}
     <div class="deck-curve">${curve}</div>
     <div class="deck-columns">
       ${deckSection('Legend', [{ name: deck.legendName, entry: deck.legendEntry, count: 1 }])}
@@ -1282,8 +1597,12 @@ function renderDeck() {
       ${deckSection('Battlefields', deck.battlefields)}
     </div>
     <p class="deck-note">Card choices are a heuristic — legality is exact, but which
-    of your legal cards are <em>best</em> together is a judgement call the generator
-    approximates from rarity, champion tags, energy curve and keyword density.</p>`;
+    of your legal cards are <em>best</em> together is a judgement call. It ranks them
+    on rarity, champion tags, energy curve and keyword density, then looks for the
+    synergies your collection can actually field — discard, XP, empower and the rest —
+    and trades cards one at a time while the deck as a whole keeps improving${
+      deck.swaps ? ` (${deck.swaps} trade${deck.swaps === 1 ? '' : 's'} here)` : ''
+    }. Click any card for its details.</p>`;
 }
 
 function buildDeck(legendId = null) {
@@ -1336,8 +1655,12 @@ el('deck-copy').addEventListener('click', async () => {
 });
 
 // Clicking the backdrop closes, matching how the rest of the page behaves.
+// A card name opens its details on top, leaving this dialog open underneath —
+// closing the detail view puts you back on the list you were reading.
 deckModal.addEventListener('click', (e) => {
-  if (e.target === deckModal) deckModal.close();
+  if (e.target === deckModal) return deckModal.close();
+  const name = e.target.closest('[data-card]');
+  if (name) openCardDetail(name.dataset.card);
 });
 
 /* ---------------- pack simulator ---------------- */

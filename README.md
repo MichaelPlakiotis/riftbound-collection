@@ -58,6 +58,9 @@ No server, no build step, no install — opening `index.html` locally works too.
 - **Prices** — market price under each card, the value of your stack once you own
   more than one, and the move since the last sync. A move has to clear both 3%
   and 5¢ to show, otherwise a penny of rounding on a 5¢ common reads as ±20%.
+- **Click a card image** — full details: art, cost, Might, Power, domains,
+  keywords, tags, formatted rules text, flavour, both market prices, and links
+  out to Cardmarket and TCGplayer. See [Card details](#card-details).
 - **Open a pack** — booster simulator. Pick a set, tear the wrapper, click through
   the cards one at a time. See below.
 - **Build deck** — generates a legal, playable deck from cards you own. See
@@ -195,6 +198,88 @@ stays castable. Treat the list as a strong first draft, not a tuned decklist.
 If your collection can't reach 40, you get the best partial deck plus exactly
 what's missing — which doubles as a shopping list.
 
+### Synergies
+
+Scoring cards one at a time can't see the thing that actually makes a Riftbound
+deck work: nearly every archetype is a loop with two halves, and neither half is
+worth anything without the other. A `[Level 3]` body with no way to gain XP is a
+vanilla unit; a discard outlet with nothing that cares about a full trash is
+card disadvantage. In isolation both halves score like ordinary cards of their
+rarity, so a per-card ranking takes them in whatever order rarity happens to
+put them.
+
+Nine loops are recognised, each declaring both of its halves:
+
+| Theme | Sets it up | Pays it off |
+|---|---|---|
+| Discard & trash | `discard N` | "when you discard", "you've discarded", "from your trash" |
+| XP & levelling | `[Hunt N]`, "gain N XP" | `[Level N]`, "spend N XP" |
+| Empower | `[Empower]`, "empower …" | `[Empowered]`, "disempower" |
+| Gear & equipment | Gear cards, `[Equip]`, Equipment tag | `[Weaponmaster]`, "gear you control" |
+| Rune ramp | `[Add]`, "channel N runes" | "control 7 or more runes", "for each rune you control" |
+| Tokens & swarm | cards that play tokens | `[Legion]`, "other friendly units" |
+| Spell slinging | Spell cards | "when you play a spell", "with a spell" |
+| Hidden cards | `[Hidden]` | "from face down", "when you hide" |
+| Sacrifice | "kill a friendly …" | `[Deathknell]` |
+
+Matching runs against keywords, tags, type and the rules text **with reminder
+parentheses stripped** — reminder text restates the keyword it belongs to, so
+leaving it in makes `[Hunt 2] (…gain 2 XP.)` register as an XP enabler twice and
+every `[Empowered]` reminder register its card as an empowerer it isn't.
+
+A theme is only pursued when your collection can field both halves — at least
+five enablers and three payoffs in copies you own — and the strongest two are
+picked, the second scored as a subplot at 55%. A theme your **Legend's own text**
+is built around is worth 60% more than any amount of depth in the pool: it's the
+one card in play every game. The deck panel shows what it settled on and how
+many cards ended up on each side; a lopsided pair is the interesting case,
+because it means the collection could only supply one end of the loop.
+
+### Trading cards in and out
+
+The greedy fill is fast and wrong in a predictable way: it commits to a card the
+moment it comes up in the ranking and never reconsiders, so a strong 3-drop that
+arrives after the 3-energy bucket filled is gone for good — even though the
+cards that filled it scored less.
+
+So a second pass repeatedly trades the single copy whose replacement improves
+the **deck** most, until nothing does (capped at 24 trades; it converges well
+before that). "Improves the deck" is the part a card score can't express:
+
+- **Shape** — distance from the type mix and the energy curve, charged
+  super-linearly. Bending the plan by a card or two is a trade worth making for
+  a card worth having; three spells where the plan wants eleven is not, and a
+  flat per-card cost prices those the same.
+- **Balance** — how many enabler/payoff *pairs* the deck ended up with,
+  deliberately asymmetric. A payoff with nothing to turn it on is a dead card,
+  penalised harder than a pair is rewarded, so half-committing to a theme scores
+  below ignoring it. A surplus *enabler* isn't the same failure — an extra
+  discard outlet still discards.
+
+The trade count for the deck you're looking at is shown at the bottom of the
+panel.
+
+### Card details
+
+Clicking any card image — in the grid, or a card name in a suggested deck —
+opens its full art, cost, Might, Power, domains, keywords, tags, rules text,
+flavour and both market prices, with the ownership steppers repeated so you can
+edit the count without closing it. Rules text is reformatted on the way in:
+Riftcodex ships it as one unbroken run carrying the game's own inline codes
+(`:rb_energy_3:`, `:rb_rune_calm:`, `:rb_might:`), with no separator between
+abilities at all, so the paragraph breaks are inferred, the codes become symbols
+and reminder text is dimmed.
+
+Two links out: **Cardmarket**, searching their Riftbound category, and
+**TCGplayer**, which is an exact product link wherever the card carries a
+product id. The Cardmarket query drops the punctuation between a champion and
+their title — our catalogue writes both `Vi - Destructive` and
+`Kai'Sa, Survivor` depending on the set, and neither separator is certain to be
+the one Cardmarket printed, so `Vi Destructive` matches either way. Cardmarket
+answers automated requests with a 403, so the exact query string is unverified
+from here; a name that finds nothing still lands on their search page rather
+than a 404.
+
 ### Copy list
 
 **Copy list** produces the format [Rift Atlas](https://riftatlas.com) and the
@@ -284,8 +369,8 @@ The base printing always sorts first and keeps the clean ID.
 ```
 index.html       markup
 styles.css       styles
-app.js           filtering, sorting, stats, prices, persistence, export/import, deck + pack UI
-deck.js          deck generator — rules engine, no DOM dependency
+app.js           filtering, sorting, stats, prices, persistence, export/import, card detail, deck + pack UI
+deck.js          deck generator — rules engine, synergy scoring and search, no DOM dependency
 pack.js          booster pack model — slot table and draws, no DOM dependency
 sync-cards.mjs   pulls cards from the Riftcodex API
 sync-prices.mjs  pulls market prices from TCGplayer

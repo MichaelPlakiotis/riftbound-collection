@@ -76,6 +76,192 @@
   /** Rough power proxy — the game has no power rating, so rarity stands in. */
   const RARITY_SCORE = { common: 0, uncommon: 1, rare: 2.5, epic: 4, showcase: 4, promo: 2 };
 
+  /* ---------------- synergy themes ---------------- */
+
+  /**
+   * Riftbound's card pool is built around a handful of resource loops, and each
+   * one comes in two halves: cards that *produce* the resource and cards that
+   * *reward* having produced it. Neither half is worth much alone — a Level 3
+   * body with no way to gain XP is a vanilla unit, and discard outlets with
+   * nothing that cares about a full trash are pure card disadvantage — which is
+   * exactly what a per-card score can't see, because in isolation both halves
+   * look like ordinary cards of their rarity.
+   *
+   * So each theme declares both halves. A theme only earns a bonus when the
+   * collection can field both, and the deck-level evaluation below rewards the
+   * *pairs* the deck ends up with rather than the count of either side.
+   *
+   * Matching runs against the keyword list, the tags, the type, and the rules
+   * text with reminder parentheses stripped out. Stripping matters: reminder
+   * text restates the keyword it belongs to, so `[Hunt 2] (…gain 2 XP.)` would
+   * otherwise register as an XP enabler twice, and every `[Empowered]` reminder
+   * would register its card as an empowerer it isn't.
+   */
+  const THEMES = [
+    {
+      id: 'discard',
+      label: 'Discard & trash',
+      // "discard 1", "discard 2" — the imperative. Deliberately not a bare
+      // \bdiscard\b, which would also catch "when you discard me", a card that
+      // rewards the outlet rather than being one.
+      enable: { text: [/\bdiscard \d/i] },
+      payoff: {
+        text: [
+          /(?:when|whenever|if) you'?(?:ve)? ?discard/i,
+          /you'?ve discarded/i,
+          /\b(?:from|in) your trash\b/i,
+          /cards in your trash/i,
+        ],
+      },
+    },
+    {
+      id: 'xp',
+      label: 'XP & levelling',
+      // [Hunt N] is "gain N XP when I conquer or hold" — the reminder that says
+      // so is stripped, so the keyword is what identifies it.
+      enable: { keywords: ['hunt'], text: [/gain \d+ xp/i, /gain xp/i] },
+      payoff: { keywords: ['level'], text: [/\[level \d/i, /spend \d+ xp/i, /\d\+ xp/i] },
+    },
+    {
+      id: 'empower',
+      label: 'Empower',
+      enable: { keywords: ['empower'], text: [/\bempower\b/i] },
+      payoff: { keywords: ['empowered'], text: [/\[empowered\]/i, /\bdisempower\b/i] },
+    },
+    {
+      id: 'gear',
+      label: 'Gear & equipment',
+      enable: { types: ['Gear'], tags: ['Equipment'], keywords: ['equip'] },
+      payoff: {
+        keywords: ['weaponmaster'],
+        text: [/gear you control/i, /number of gear/i, /friendly gear/i, /equipment attached/i],
+      },
+    },
+    {
+      id: 'runes',
+      label: 'Rune ramp',
+      enable: { keywords: ['add'], text: [/channel \d+ rune/i, /channel a rune/i] },
+      payoff: {
+        text: [/control \d+ or more runes/i, /for each rune you control/i, /runes you control/i],
+      },
+    },
+    {
+      id: 'tokens',
+      label: 'Tokens & swarm',
+      enable: { text: [/\btoken\b/i] },
+      payoff: {
+        keywords: ['legion'],
+        text: [/other friendly units/i, /units you control/i, /for each (?:friendly |other )?unit/i],
+      },
+    },
+    {
+      id: 'spells',
+      label: 'Spell slinging',
+      enable: { types: ['Spell'] },
+      payoff: {
+        text: [/(?:when|whenever) you play a spell/i, /next spell you play/i, /spells you play/i,
+          /with a spell/i, /spell from your trash/i],
+      },
+    },
+    {
+      id: 'hidden',
+      label: 'Hidden cards',
+      enable: { keywords: ['hidden'] },
+      payoff: { text: [/from face down/i, /when you hide/i] },
+    },
+    {
+      id: 'sacrifice',
+      label: 'Sacrifice',
+      // Inverted from how it reads: the Deathknell body is the payoff — it
+      // *wants* to die — and the card that kills a friendly is the enabler.
+      enable: { text: [/kill a friendly/i, /kill (?:a|an|one|two) [^.]{0,24}you control/i] },
+      payoff: { keywords: ['deathknell'] },
+    },
+  ];
+
+  /**
+   * Rules text as the matchers see it: entities decoded, reminders removed.
+   * Memoised, because building a deck for every Legend you own asks the same
+   * question of the same card dozens of times, and this is three passes over a
+   * string in the middle of it.
+   */
+  const RULES_CACHE = new WeakMap();
+  function rulesText(card) {
+    let text = RULES_CACHE.get(card);
+    if (text === undefined) {
+      text = (card.description || '')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/\([^)]*\)/g, ' ');
+      RULES_CACHE.set(card, text);
+    }
+    return text;
+  }
+
+  const sideHits = (side, card, text) =>
+    (side.types || []).includes(card.type) ||
+    (side.keywords || []).some((k) => (card.keywords || []).includes(k)) ||
+    (side.tags || []).some((t) => (card.tags || []).includes(t)) ||
+    (side.text || []).some((re) => re.test(text));
+
+  /* A theme has to clear both floors before it's worth building toward: too few
+   * enablers and the payoffs never come online, too few payoffs and the
+   * enablers are a tax. Counted in copies, against a 40-card deck. */
+  const MIN_ENABLERS = 5;
+  const MIN_PAYOFFS = 3;
+  /* Past this many copies a theme can't use more, so extra depth shouldn't keep
+   * inflating its rank over a rival theme the collection supports just as well. */
+  const THEME_CAP = 14;
+  /** How many themes a single 40-card deck can meaningfully chase. */
+  const MAX_THEMES = 2;
+  /** The second theme is a subplot, and scored as one. */
+  const THEME_WEIGHT = [1, 0.55];
+
+  /**
+   * Ranks the themes the legal pool can actually field, strongest first.
+   *
+   * Strength is "how many deck slots could this theme legitimately fill",
+   * counted in owned copies and capped on each side, rather than a raw card
+   * count — a theme with thirty payoffs and five enablers is not twice the deck
+   * a theme with ten and ten is.
+   */
+  function detectThemes(candidates, legend) {
+    const legendText = rulesText(legend);
+    const ranked = [];
+
+    // One pass over the pool for all nine themes, rather than nine over the pool.
+    const enable = THEMES.map(() => 0);
+    const payoff = THEMES.map(() => 0);
+    for (const entry of candidates) {
+      const text = rulesText(entry.card);
+      const copies = Math.min(entry.qty, copyLimit(entry.card));
+      THEMES.forEach((theme, i) => {
+        if (sideHits(theme.enable, entry.card, text)) enable[i] += copies;
+        if (sideHits(theme.payoff, entry.card, text)) payoff[i] += copies;
+      });
+    }
+
+    THEMES.forEach((theme, i) => {
+      const enablers = enable[i];
+      const payoffs = payoff[i];
+      if (enablers < MIN_ENABLERS || payoffs < MIN_PAYOFFS) return;
+
+      let strength = Math.min(enablers, THEME_CAP) + Math.min(payoffs, THEME_CAP);
+      // The Legend is the one card guaranteed to be in play every game, so a
+      // theme its own text is built around is the theme the deck is built
+      // around. Worth more than any amount of depth in the pool.
+      if (
+        sideHits(theme.enable, legend, legendText) ||
+        sideHits(theme.payoff, legend, legendText)
+      ) {
+        strength *= 1.6;
+      }
+      ranked.push({ ...theme, enablers, payoffs, strength });
+    });
+
+    return ranked.sort((a, b) => b.strength - a.strength).slice(0, MAX_THEMES);
+  }
+
   /* How a 40-card deck ought to be shaped. Both are targets, not hard limits:
    * if the collection can't fill a bucket the builder spills into the next pass. */
   const TYPE_TARGET = { Unit: 23, Spell: 11, Gear: 6 };
@@ -139,7 +325,13 @@
 
   /* ---------------- scoring ---------------- */
 
-  function scoreCard(card, legend) {
+  /* A card's own contribution to its theme. The payoff half is worth more than
+   * the enabler half: enablers are usually generic and interchangeable, while
+   * the payoff is the card the deck is actually trying to cast. */
+  const ENABLE_BONUS = 1.6;
+  const PAYOFF_BONUS = 2.4;
+
+  function scoreCard(card, legend, themes = []) {
     let s = RARITY_SCORE[card.rarity] ?? 0;
 
     // Cards built around the same champion as the Legend are the whole point.
@@ -158,73 +350,281 @@
     // Keyword count is a crude but honest proxy for a card that does something.
     s += Math.min(2, (card.keywords || []).length * 0.4);
 
+    // Pulling toward the themes the collection supports. This is only the
+    // per-card half of it — whether the halves actually pair up is a property
+    // of the finished deck, and priced in evaluate() below.
+    const themeText = rulesText(card);
+    themes.forEach((theme, i) => {
+      const w = THEME_WEIGHT[i] ?? 0;
+      if (sideHits(theme.enable, card, themeText)) s += ENABLE_BONUS * w;
+      if (sideHits(theme.payoff, card, themeText)) s += PAYOFF_BONUS * w;
+    });
+
     return s;
+  }
+
+  /**
+   * Everything the fill and the search need to know about one candidate, worked
+   * out once. The regexes above are far too expensive to re-run inside a search
+   * loop that prices thousands of candidate swaps.
+   */
+  function candidateInfo(entry, legend, themes) {
+    const card = entry.card;
+    const text = rulesText(card);
+    return {
+      entry,
+      card,
+      key: entry.key,
+      name: entry.name,
+      type: card.type,
+      bucket: curveBucket(card.stats.energy),
+      signature: card.supertype === 'Signature',
+      max: Math.min(entry.qty, copyLimit(card)),
+      score: scoreCard(card, legend, themes),
+      enables: themes.map((t) => sideHits(t.enable, card, text)),
+      pays: themes.map((t) => sideHits(t.payoff, card, text)),
+    };
   }
 
   /* ---------------- main deck ---------------- */
 
-  function fillMain(candidates, legend, preset) {
-    const chosen = [...preset];
-    // Keyed on the canonical name, so reprints share one 3-copy budget.
-    const takenByName = new Map(chosen.map((p) => [p.entry.key, p.count]));
-    let total = chosen.reduce((n, p) => n + p.count, 0);
-    let signatures = chosen
-      .filter((p) => p.entry.card.supertype === 'Signature')
-      .reduce((n, p) => n + p.count, 0);
+  /* ---- the deck as a whole ----
+   *
+   * Two things decide whether 40 cards work together that no per-card score can
+   * see, so both are priced here rather than in scoreCard:
+   *
+   *   shape    how far the type mix and the energy curve have drifted from
+   *            their targets. The greedy fill treats those targets as hard
+   *            quotas it loosens when stuck; as a cost instead, the search can
+   *            knowingly buy a slot off-curve for a card that's worth it.
+   *   balance  how many enabler/payoff *pairs* the deck ended up with. Twelve
+   *            payoffs and two enablers is a worse deck than seven and seven,
+   *            and the card that unbalances it is individually the best one
+   *            left — which is exactly why greedy keeps taking it.
+   */
+
+  const SHAPE_TYPE_COST = 1.1; // per card away from the type target
+  const SHAPE_CURVE_COST = 0.7; // per card away from the curve target
+  const THEME_PAIR = 1.0; // per payoff the deck can actually turn on
+  const THEME_SKEW = 1.6; // per payoff it can't
+
+  /**
+   * Charged super-linearly on purpose. Bending the mix by a card or two is a
+   * trade the search should be free to make for a card worth having; gutting a
+   * whole slot of the deck — three spells where the plan wants eleven — is not.
+   * A flat per-card cost prices those the same, and the search then spends the
+   * cheap first card of the deviation over and over until the slot is empty.
+   */
+  const deviation = (have, want, unit) => {
+    const off = Math.abs(have - want);
+    return (off + off * off * 0.12) * unit;
+  };
+
+  const shapeCost = (state) => {
+    let cost = 0;
+    for (const t of Object.keys(TYPE_TARGET)) {
+      cost += deviation(state.type[t] || 0, TYPE_TARGET[t], SHAPE_TYPE_COST);
+    }
+    for (const b of Object.keys(CURVE_TARGET)) {
+      cost += deviation(state.curve[b] || 0, CURVE_TARGET[b], SHAPE_CURVE_COST);
+    }
+    return cost;
+  };
+
+  const balanceValue = (state) => {
+    let value = 0;
+    for (let i = 0; i < state.themeE.length; i++) {
+      const w = THEME_WEIGHT[i] ?? 0;
+      const e = state.themeE[i];
+      const p = state.themeP[i];
+      /* Deliberately asymmetric. A payoff with nothing to turn it on is a dead
+       * card and the deck is strictly worse for it, so it's penalised harder
+       * than a pair is rewarded — half-committing to a theme should score below
+       * ignoring it. A surplus *enabler* is not the same failure: an extra
+       * discard outlet still discards, and a spell is still a spell, which
+       * matters because the gear and spell themes count a whole card type as
+       * their enabling half. */
+      value += (THEME_PAIR * Math.min(e, p) - THEME_SKEW * Math.max(0, p - e)) * w;
+    }
+    return value;
+  };
+
+  const evaluate = (state) => state.quality - shapeCost(state) + balanceValue(state);
+
+  /** Running tallies, so a candidate swap can be priced without rebuilding the deck. */
+  function newState(themeCount) {
+    return {
+      counts: new Map(), // entry key -> copies in the deck
+      infos: new Map(), // entry key -> its candidate record
+      type: {},
+      curve: {},
+      themeE: new Array(themeCount).fill(0),
+      themeP: new Array(themeCount).fill(0),
+      quality: 0,
+      signatures: 0,
+      total: 0,
+    };
+  }
+
+  /** Adds `n` copies of a candidate to the tallies; `n` may be negative. */
+  function place(state, info, n) {
+    const now = (state.counts.get(info.key) || 0) + n;
+    if (now <= 0) state.counts.delete(info.key);
+    else state.counts.set(info.key, now);
+    state.infos.set(info.key, info);
+
+    state.type[info.type] = (state.type[info.type] || 0) + n;
+    state.curve[info.bucket] = (state.curve[info.bucket] || 0) + n;
+    state.quality += info.score * n;
+    state.total += n;
+    if (info.signature) state.signatures += n;
+    for (let i = 0; i < state.themeE.length; i++) {
+      if (info.enables[i]) state.themeE[i] += n;
+      if (info.pays[i]) state.themeP[i] += n;
+    }
+  }
+
+  /**
+   * Greedy first pass: rank by card score and take copies until the deck is
+   * full, in three passes each looser than the last. The first respects both
+   * the type mix and the energy curve; the second drops the curve; the third
+   * takes anything legal, which is what keeps a thin collection from stalling
+   * at 32. Where it gets the mix wrong — and it does, because a full bucket in
+   * the first pass shuts out cards that later passes then take out of order —
+   * refine() below is what puts it right.
+   */
+  function fillMain(infos, preset, themeCount) {
+    const state = newState(themeCount);
+    for (const p of preset) place(state, p.info, p.count);
 
     const typeLeft = { ...TYPE_TARGET };
     const curveLeft = { ...CURVE_TARGET };
-    for (const p of chosen) {
-      typeLeft[p.entry.card.type] = (typeLeft[p.entry.card.type] ?? 0) - p.count;
-      const b = curveBucket(p.entry.card.stats.energy);
-      curveLeft[b] -= p.count;
-    }
+    for (const t of Object.keys(state.type)) typeLeft[t] = (typeLeft[t] ?? 0) - state.type[t];
+    for (const b of Object.keys(state.curve)) curveLeft[b] -= state.curve[b];
 
-    const ranked = candidates
-      .map((entry) => ({ entry, score: scoreCard(entry.card, legend) }))
-      .sort((a, b) => b.score - a.score || a.entry.name.localeCompare(b.entry.name));
+    const ranked = [...infos].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
 
-    /* Three passes, each looser than the last. The first respects both the type
-     * mix and the energy curve; the second drops the curve; the third takes
-     * anything legal, which is what keeps a thin collection from stalling at 32. */
     const passes = [
-      (c) => (typeLeft[c.type] ?? 0) > 0 && curveLeft[curveBucket(c.stats.energy)] > 0,
-      (c) => (typeLeft[c.type] ?? 0) > 0,
+      (i) => (typeLeft[i.type] ?? 0) > 0 && curveLeft[i.bucket] > 0,
+      (i) => (typeLeft[i.type] ?? 0) > 0,
       () => true,
     ];
 
     for (const allows of passes) {
-      for (const { entry } of ranked) {
-        if (total >= MAIN_DECK) break;
-        const card = entry.card;
-        if (!allows(card)) continue;
+      for (const info of ranked) {
+        if (state.total >= MAIN_DECK) break;
+        if (!allows(info)) continue;
 
-        const already = takenByName.get(entry.key) || 0;
-        let room = Math.min(entry.qty, copyLimit(card)) - already;
-        if (room <= 0) continue;
-
+        let room = info.max - (state.counts.get(info.key) || 0);
         // 103.2.e — three Signature cards in total, not three of each.
-        if (card.supertype === 'Signature') room = Math.min(room, MAX_SIGNATURES - signatures);
-        if (room <= 0) continue;
-
-        const take = Math.min(room, MAIN_DECK - total);
+        if (info.signature) room = Math.min(room, MAX_SIGNATURES - state.signatures);
+        const take = Math.min(room, MAIN_DECK - state.total);
         if (take <= 0) continue;
 
-        const existing = chosen.find((p) => p.entry.key === entry.key);
-        if (existing) existing.count += take;
-        else chosen.push({ name: entry.name, entry, count: take, score: scoreCard(card, legend) });
-
-        takenByName.set(entry.key, already + take);
-        total += take;
-        typeLeft[card.type] = (typeLeft[card.type] ?? 0) - take;
-        curveLeft[curveBucket(card.stats.energy)] -= take;
-        if (card.supertype === 'Signature') signatures += take;
+        place(state, info, take);
+        typeLeft[info.type] = (typeLeft[info.type] ?? 0) - take;
+        curveLeft[info.bucket] -= take;
       }
-      if (total >= MAIN_DECK) break;
+      if (state.total >= MAIN_DECK) break;
     }
 
-    return { picks: chosen, total };
+    return state;
   }
+
+  /**
+   * How many swaps the search may accept. Every legend the collection holds
+   * gets its own build, so this runs once per legend on a click — and it
+   * converges long before the cap in practice, because best-improvement runs
+   * out of improving swaps quickly once the shape is right.
+   */
+  const MAX_SWAPS = 24;
+
+  /**
+   * How many candidates the search will consider bringing in. The pool for a
+   * large collection runs to hundreds of cards, and pricing every one of them
+   * against every card in the deck, every round, for every Legend owned, is the
+   * whole cost of the build. The cards ranked two hundredth by score are not
+   * the ones an improving swap is hiding in, so the search looks at the best of
+   * them — which still leaves it four times more alternatives than the deck has
+   * slots.
+   */
+  const SEARCH_POOL = 120;
+
+  /**
+   * Second pass: repeatedly trade the single copy whose replacement improves the
+   * *deck* most, until nothing improves it. This is what the greedy fill can't
+   * do — it commits to a card the moment it comes up in the ranking and never
+   * reconsiders, so a strong 3-drop that arrived after the 3-bucket filled is
+   * gone for good even though the cards that filled it scored less.
+   *
+   * The swap is always one-for-one, so it can only run on a deck that reached
+   * 40. A short deck has already taken every legal copy in the collection and
+   * there's nothing left to trade with.
+   */
+  function refine(state, allInfos, protectedKey) {
+    if (state.total < MAIN_DECK) return 0;
+
+    const infos = [...allInfos]
+      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
+      .slice(0, SEARCH_POOL);
+
+    let swaps = 0;
+    while (swaps < MAX_SWAPS) {
+      const before = evaluate(state);
+      let best = null;
+      // Snapshotted, because pricing a swap takes a card out of the deck and
+      // puts it back — which for a one-of means deleting the key and re-adding
+      // it, and a live Map iterator would then hand it back a second time.
+      const held = [...state.counts];
+
+      for (const add of infos) {
+        if ((state.counts.get(add.key) || 0) >= add.max) continue;
+
+        for (const [dropKey, copies] of held) {
+          if (dropKey === add.key) continue;
+          // The Chosen Champion is a rules requirement, not a card choice —
+          // its last copy is the one card the search may never trade away.
+          if (dropKey === protectedKey && copies <= 1) continue;
+
+          const drop = state.infos.get(dropKey);
+          // 103.2.e caps signatures at three across the deck; trading one
+          // signature for another keeps the count where it is.
+          if (add.signature && !drop.signature && state.signatures >= MAX_SIGNATURES) continue;
+
+          place(state, drop, -1);
+          place(state, add, 1);
+          const gain = evaluate(state) - before;
+          place(state, add, -1);
+          place(state, drop, 1);
+
+          // The epsilon is doing real work: the tallies are added to and
+          // subtracted from in floating point thousands of times, so "no
+          // change" arrives as a number a hair either side of zero, and
+          // accepting one of those would loop the search on a no-op.
+          if (gain > (best ? best.gain : 1e-6)) best = { add, drop, gain };
+        }
+      }
+
+      if (!best) break;
+      place(state, best.drop, -1);
+      place(state, best.add, 1);
+      swaps++;
+    }
+    return swaps;
+  }
+
+  /** Tallies back into the pick list the rest of the builder speaks. */
+  const statePicks = (state, protectedKey) =>
+    [...state.counts].map(([key, count]) => {
+      const info = state.infos.get(key);
+      return {
+        name: info.name,
+        entry: info.entry,
+        count,
+        score: info.score,
+        ...(key === protectedKey ? { chosen: true } : {}),
+      };
+    });
 
   /* ---------------- runes ---------------- */
 
@@ -343,16 +743,17 @@
       legal.push(entry);
     }
 
+    // Which resource loops this collection can actually field under this
+    // Legend. Everything scored from here on is scored against them.
+    const themes = detectThemes(legal, legend);
+    const infos = legal.map((entry) => candidateInfo(entry, legend, themes));
+
     // 103.2.c — Chosen Champion: a champion *unit* carrying the Legend's tag.
-    const championOptions = legal
+    const championOptions = infos
       .filter(
-        (e) =>
-          e.card.type === 'Unit' &&
-          e.card.supertype === 'Champion' &&
-          sharesTag(e.card, legend.tags)
+        (i) => i.type === 'Unit' && i.card.supertype === 'Champion' && sharesTag(i.card, legend.tags)
       )
-      .map((entry) => ({ entry, score: scoreCard(entry.card, legend) }))
-      .sort((a, b) => b.score - a.score || a.entry.name.localeCompare(b.entry.name));
+      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
 
     const champion = championOptions[0] || null;
     if (!champion) {
@@ -367,22 +768,16 @@
       };
     }
 
-    const preset = [
-      {
-        name: champion.entry.name,
-        entry: champion.entry,
-        count: Math.min(champion.entry.qty, copyLimit(champion.entry.card)),
-        score: champion.score,
-        chosen: true,
-      },
-    ];
+    const state = fillMain(infos, [{ info: champion, count: champion.max }], themes.length);
+    const swaps = refine(state, infos, champion.key);
 
-    const { picks: mainPicks, total: mainTotal } = fillMain(legal, legend, preset);
+    const mainPicks = statePicks(state, champion.key);
+    const mainTotal = state.total;
     const runes = pickRunes(runePool, identity, mainPicks);
 
     const seenBattlefield = new Set();
     const battlefields = battlefieldPool
-      .map((entry) => ({ entry, score: scoreCard(entry.card, legend) }))
+      .map((entry) => ({ entry, score: scoreCard(entry.card, legend, themes) }))
       .sort((a, b) => b.score - a.score || a.entry.name.localeCompare(b.entry.name))
       // 103.4 — no two battlefields may share a name, so one copy of each.
       .filter((b) => !seenBattlefield.has(b.entry.name) && seenBattlefield.add(b.entry.name))
@@ -421,7 +816,9 @@
       mainTotal >= MAIN_DECK && runes.total >= RUNE_DECK && battlefields.length >= BATTLEFIELDS;
 
     // Completeness dominates: a legal 40 always beats a stronger-but-short pile.
-    const quality = mainPicks.reduce((n, p) => n + p.score * p.count, 0) / Math.max(1, mainTotal);
+    // Below that, decks are compared on the same deck-level figure the search
+    // was optimising, per card so a short deck isn't flattered by its own size.
+    const quality = evaluate(state) / Math.max(1, mainTotal);
     const score =
       (complete ? 1000 : 0) + mainTotal * 4 + runes.total * 2 + battlefields.length * 3 + quality;
 
@@ -434,7 +831,17 @@
       legendName: legendEntry.name,
       legendEntry,
       identity: [...identity],
-      champion: preset[0],
+      champion: mainPicks.find((p) => p.chosen),
+      /* What the deck is trying to do, and how many of its cards are holding up
+       * each end of it — the honest way to show whether the plan came together
+       * or the collection could only supply one half of it. */
+      themes: themes.map((t, i) => ({
+        id: t.id,
+        label: t.label,
+        enablers: state.themeE[i],
+        payoffs: state.themeP[i],
+      })),
+      swaps,
       main: mainPicks.sort(
         (a, b) =>
           (a.entry.card.stats.energy ?? 99) - (b.entry.card.stats.energy ?? 99) ||
