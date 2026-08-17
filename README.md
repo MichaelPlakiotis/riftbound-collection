@@ -61,6 +61,11 @@ No server, no build step, no install — opening `index.html` locally works too.
 - **Click a card image** — full details: art, cost, Might, Power, domains,
   keywords, tags, formatted rules text, flavour, both market prices, and links
   out to Cardmarket and TCGplayer. See [Card details](#card-details).
+- **Collectors** — the button beside the search box. Lists everyone who has made
+  their collection public; pick one and their cards replace yours in the grid, so
+  the search box and every filter and sort are suddenly working on their binder.
+  A bar across the top compares their totals with yours. Read-only throughout.
+  Needs an account on both sides — see [Public profiles](#public-profiles).
 - **Open a pack** — booster simulator. Pick a set, tear the wrapper, click through
   the cards one at a time. See below.
 - **Build deck** — generates a legal, playable deck from cards you own. See
@@ -367,16 +372,21 @@ The base printing always sorts first and keeps the clean ID.
 ## Layout
 
 ```
-index.html       markup
-styles.css       styles
-app.js           filtering, sorting, stats, prices, persistence, export/import, card detail, deck + pack UI
-deck.js          deck generator — rules engine, synergy scoring and search, no DOM dependency
-pack.js          booster pack model — slot table and draws, no DOM dependency
-sync-cards.mjs   pulls cards from the Riftcodex API
-sync-prices.mjs  pulls market prices from TCGplayer
-data/cards.js    generated — loaded by index.html (window.RIFTBOUND_DATA)
-data/prices.js   generated — loaded by index.html (window.RIFTBOUND_PRICES)
-data/*.json      generated — same payloads, for other tooling (git-ignored)
+index.html          markup
+styles.css          styles
+app.js              filtering, sorting, stats, prices, persistence, export/import, card detail, deck + pack UI, visiting mode
+deck.js             deck generator — rules engine, synergy scoring and search, no DOM dependency
+pack.js             booster pack model — slot table and draws, no DOM dependency
+cloud.js            optional — accounts, cloud sync, and the session everything else reads
+social.js           optional — public profiles, the collector browser, ?u= links
+supabase-config.js  project URL and browser-safe key (placeholders = local-only)
+supabase-schema.sql tables, RLS policies and the browse view — run once in the SQL editor
+vendor/supabase.js  vendored client, injected on demand
+sync-cards.mjs      pulls cards from the Riftcodex API
+sync-prices.mjs     pulls market prices from TCGplayer
+data/cards.js       generated — loaded by index.html (window.RIFTBOUND_DATA)
+data/prices.js      generated — loaded by index.html (window.RIFTBOUND_PRICES)
+data/*.json         generated — same payloads, for other tooling (git-ignored)
 ```
 
 The `.json` twins aren't committed; the sync scripts produce them. Prices are
@@ -384,6 +394,13 @@ optional — with no `data/prices.js` the app simply omits every price.
 
 `deck.js` deliberately touches no DOM, so the rules engine can be exercised
 straight from Node.
+
+`cloud.js` and `social.js` are strictly additive, and they say so by construction:
+both return early when `supabase-config.js` still holds placeholders, removing the
+buttons they own on the way out. They reach `app.js` only through the small object
+it publishes as `window.RiftboundApp` — read the collection, replace it, sanitise a
+blob, raise a toast, enter or leave visiting mode. Delete both files and the config
+and the site is the local-only tracker it started as.
 
 ## Data source
 
@@ -458,7 +475,9 @@ local-first behaviour.
 1. Create a project at [supabase.com](https://supabase.com) (the free tier is
    plenty — this uses one small table).
 2. **SQL Editor → New query**, paste `supabase-schema.sql`, Run. That creates the
-   `collections` table and its Row Level Security policies.
+   `collections` and `profiles` tables, their Row Level Security policies and the
+   `public_collectors` view. Every statement guards itself, so re-run the whole
+   file after pulling — that's how an existing project picks up public profiles.
 3. **Authentication → Sign In / Providers → Email**: leave Email enabled and turn
    **Confirm email** *off*. Supabase's built-in mailer is rate-limited to a
    handful of messages an hour, which turns a few friends signing up into a
@@ -505,6 +524,74 @@ Nothing, unless you use it. `vendor/supabase.js` (the client, vendored so the
 site keeps its no-build-step, no-runtime-CDN shape) is injected on demand — only
 when a stored session needs restoring or someone opens the sign-in dialog. A
 visitor who never signs in fetches exactly what they always did.
+
+## Public profiles
+
+Off by default, and off is genuinely off: until you turn the switch on, no other
+account can see that yours exists.
+
+**Turning it on.** Open your account (the button with your name on it) and flip
+**Public profile**. It asks for a handle first — 3–20 characters, letters, digits,
+`-` and `_`. That handle is the only thing about you other players ever see; your
+email stays in `auth.users` and is never read by anything here. Turning the switch
+back off is one click and takes effect immediately.
+
+**Who can look.** Signed-in accounts only. A public collection is not on the open
+web — an anonymous request gets nothing, because every policy tests
+`auth.uid() is not null` before it tests anything else. The profile page hands you
+a `?u=yourhandle` link to share, and opening it signed out prompts to sign in
+rather than showing the collection.
+
+**Browsing.** The **Collectors** button next to the search box lists everyone
+public, biggest collection first. Pick one and their cards replace yours in the
+grid.
+
+### Visiting a collection
+
+The visiting view is the *same* grid, not a second one. Their collection is
+swapped in behind the four accessors every read already goes through, so the
+search box, all six filters, every sort order, the set-progress panel and the
+value breakdown are pointed at their cards for free — search "yordle" while
+visiting and you're searching their binder. That's the whole reason it works this
+way: a separate viewer would have had to grow its own copy of all of it, and the
+copies would have drifted.
+
+A bar across the top carries the comparison — their unique cards, copies, foils,
+wishlist and worth, each with yours underneath as a ratio. Percentages up to a
+doubling, multiples past it, because "3,410% of yours" is a figure you have to
+decode and "34× yours" is one you can see.
+
+Everything is read-only while the bar is up. The steppers become plain counts,
+the wishlist star becomes a mark rather than a button, and `setEntry` refuses
+outright — the guard is at the write, not spread across the four controls that
+reach it. Open a card and you get both sides at once: what they have and what you
+have. Build deck, Open a pack, Export and Import all leave the header while
+visiting; each of them means *your* collection, and leaving them up over someone
+else's cards would misstate whose they are.
+
+### How the database enforces it
+
+Three additions to `supabase-schema.sql`, all additive:
+
+- **`profiles`** — one row per account: handle, an `is_public` flag, nothing else.
+  Handles are unique case-insensitively, via a unique index on `lower(handle)`, so
+  `Karra` and `karra` can't be two people.
+- **A second SELECT policy on `collections`.** Permissive policies OR together, so
+  this widens reads without touching "read own collection", and the write policies
+  are untouched — which is exactly what makes a public collection readable by
+  everyone and writable by nobody but its owner. The public test lives in a
+  `security definer` function so the policy doesn't depend on another table's
+  policies.
+- **`public_collectors`** — a `security_invoker` view (Postgres 15+, which every
+  current Supabase project is) joining the two and counting the cards, so the
+  browse list is one small query instead of downloading every public collection to
+  measure it. `security_invoker` is what keeps both tables' RLS applying through
+  the view; without it a view runs as its owner and hands out rows RLS meant to
+  withhold.
+
+Nothing arriving from another account is trusted. A fetched collection goes
+through the same `sanitize()` the file importer uses — unknown card ids dropped,
+every count clamped — before it reaches the grid.
 
 ## Foils
 

@@ -17,6 +17,16 @@
       <kbd class="search-hint" aria-hidden="true">Ctrl F</kbd>
     </div>
 
+    <!-- Deliberately outside the burger panel: browsing someone else's binder
+         puts the search box and every filter to work on their cards, so the way
+         in belongs beside the search box on every screen size. social.js
+         removes it when no Supabase project is configured. -->
+    <button id="btn-collectors" class="btn btn-collectors" type="button"
+            title="Browse other collectors">
+      <span class="collectors-icon" aria-hidden="true">◍</span>
+      <span class="collectors-label">Collectors</span>
+    </button>
+
     <button id="btn-menu" class="menu-btn" type="button" aria-expanded="false"
             aria-controls="topbar-panel" aria-label="Menu and filters">
       <span class="menu-icon" aria-hidden="true"></span>
@@ -85,6 +95,10 @@
     </div>
   </div>
 </header>
+
+<!-- Only up while you're reading someone else's collection. app.js fills it; its
+     presence is what puts the whole page into read-only visiting mode. -->
+<section id="view-bar" class="view-bar" hidden></section>
 
 <section id="stats-panel" class="stats-panel" hidden></section>
 
@@ -165,11 +179,63 @@
     <p class="auth-sub" id="auth-who"></p>
     <p class="auth-note">Changes sync automatically. Signing out leaves this
       device's copy untouched.</p>
+
+    <!-- social.js owns everything below; it removes the section when no
+         Supabase project is configured, leaving the dialog as it was. -->
+    <section class="profile-pane" id="profile-pane">
+      <div class="profile-row">
+        <div class="profile-copy">
+          <b>Public profile</b>
+          <span>Let other signed-in collectors find your collection and look
+            through it. They can never change it.</span>
+        </div>
+        <label class="switch" title="Make your collection public">
+          <input type="checkbox" id="profile-public">
+          <span class="switch-track" aria-hidden="true"></span>
+        </label>
+      </div>
+
+      <div class="profile-detail" id="profile-detail" hidden>
+        <label class="auth-field">
+          <span>Handle — the name other players see, never your email</span>
+          <input id="profile-handle" type="text" maxlength="20" autocomplete="off"
+                 spellcheck="false" placeholder="3–20 letters, digits, - or _">
+        </label>
+        <div class="profile-actions">
+          <button id="profile-save" class="btn" type="button">Save handle</button>
+        </div>
+      </div>
+
+      <p class="profile-msg" id="profile-msg" hidden></p>
+      <p class="profile-link" id="profile-link" hidden></p>
+    </section>
+
     <div class="auth-actions">
       <button id="auth-signout" class="btn" type="button">Sign out</button>
       <button id="auth-done" class="btn btn-quiet" type="button">Done</button>
     </div>
   </div>
+</dialog>
+
+<!-- Who else is out there. Opened from the button beside the search box; the
+     list is a single small query, and a collection is only fetched when you
+     pick the person it belongs to. -->
+<dialog id="collectors-modal" class="collectors-modal">
+  <header class="collectors-head">
+    <div>
+      <h2>Collectors</h2>
+      <p class="collectors-sub" id="collectors-sub">Everyone who has made their
+        collection public.</p>
+    </div>
+    <button id="collectors-close" class="icon-btn" type="button" aria-label="Close">✕</button>
+  </header>
+
+  <div class="collectors-search" id="collectors-search-wrap" hidden>
+    <input id="collectors-search" type="search" placeholder="Find a collector by handle…"
+           autocomplete="off">
+  </div>
+
+  <div class="collectors-list" id="collectors-list"></div>
 </dialog>
 
 <div id="toast" class="toast" hidden></div>
@@ -181,5 +247,6 @@
 <script src="app.js"></script>
 <script src="supabase-config.js"></script>
 <script src="cloud.js"></script>
+<script src="social.js"></script>
 </body>
 </html>

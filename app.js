@@ -165,19 +165,46 @@ function money(v) {
   return fmt(currency, v >= 1000 ? 0 : 2).format(v);
 }
 
+/* ---------------- visiting another collector ---------------- */
+
+/**
+ * Someone else's public collection, shown in place of your own — `{ handle,
+ * data, updatedAt }`, or null when you're looking at your own.
+ *
+ * Every read of "how many of this card are there" in the whole app goes through
+ * the four accessors below, so pointing them at a guest's data turns the grid,
+ * the search box, all six filters, the sorts, the set-progress panel and the
+ * value breakdown into a reader for that collection. That's the entire reason
+ * this is one variable rather than a second screen: a visiting view built out of
+ * its own markup would have to grow its own copy of all of it.
+ *
+ * The one thing that must never follow is a write. setEntry refuses while this
+ * is set, and cloud.js is never handed a guest's data to push.
+ */
+let viewing = null;
+
+/** The collection every read resolves against — theirs while visiting. */
+const shown = () => viewing?.data || collection;
+
 /**
  * `q` counts ordinary copies and `f` counts foils. They're separate because
  * foils price separately — often several times the normal card — so folding
  * them into one number would misstate what a collection is worth. An entry
  * saved before foils existed simply has no `f`, which reads as zero.
  */
-const qtyOf = (id) => collection[id]?.q || 0;
-const foilOf = (id) => collection[id]?.f || 0;
+const qtyOf = (id) => shown()[id]?.q || 0;
+const foilOf = (id) => shown()[id]?.f || 0;
 /** Every physical copy of a card, foil or not — what "do I own this" means. */
 const copiesOf = (id) => qtyOf(id) + foilOf(id);
-const wishOf = (id) => !!collection[id]?.w;
+const wishOf = (id) => !!shown()[id]?.w;
 
 function setEntry(id, patch) {
+  // A visitor's binder is read-only. Every control that reaches here is hidden
+  // while visiting; this is the backstop for a stale node or a keyboard route
+  // into one, and it guarantees the guard lives next to the write rather than
+  // being re-argued at each of the four call sites.
+  if (viewing) return;
+
   const cur = collection[id] || { q: 0, f: 0, w: false };
   const next = { ...cur, ...patch };
   const q = Math.max(0, next.q | 0);
@@ -382,10 +409,18 @@ function cardHTML(c) {
         }
         <span class="qty-badge" ${copies > 0 ? '' : 'hidden'}>${copies}</span>
         <span class="foil-badge" ${f > 0 ? '' : 'hidden'} title="${f} foil${f === 1 ? '' : 's'}">${f}✦</span>
-        <button class="wish-btn ${w ? 'on' : ''}" type="button"
+        ${
+          viewing
+            ? // Their wishlist is worth seeing — it's half of why you'd look —
+              // but as a mark, not a control you could press.
+              w
+              ? `<span class="wish-mark" title="On ${esc(viewing.handle)}'s wishlist">★</span>`
+              : ''
+            : `<button class="wish-btn ${w ? 'on' : ''}" type="button"
                 data-act="wish" title="Toggle wishlist"
                 aria-label="Toggle wishlist for ${esc(c.name)}"
-                aria-pressed="${w}">${w ? '★' : '☆'}</button>
+                aria-pressed="${w}">${w ? '★' : '☆'}</button>`
+        }
       </div>
       <div class="card-body">
         <!-- A real button, so the detail view has a keyboard route in: the image
@@ -398,21 +433,41 @@ function cardHTML(c) {
           <span class="num">${esc(c.set_id)}-${esc(num)}</span>
         </div>
         ${priceHTML(c, q, f)}
-        <div class="stepper">
-          <button type="button" data-act="dec" aria-label="Remove one" ${q === 0 ? 'disabled' : ''}>−</button>
-          <input type="number" min="0" max="99" value="${q}" data-act="qty"
-                 aria-label="Copies of ${esc(c.name)} owned">
-          <button type="button" data-act="inc" aria-label="Add one">+</button>
-        </div>
-        <div class="stepper stepper-foil" title="Foil copies">
-          <button type="button" data-act="fdec" aria-label="Remove one foil" ${f === 0 ? 'disabled' : ''}>−</button>
-          <input type="number" min="0" max="99" value="${f}" data-act="fqty"
-                 aria-label="Foil copies of ${esc(c.name)} owned">
-          <button type="button" data-act="finc" aria-label="Add one foil">+</button>
-          <span class="foil-tag" aria-hidden="true">✦</span>
-        </div>
+        ${viewing ? haveHTML(q, f) : steppersHTML(c, q, f)}
       </div>
     </article>`;
+}
+
+/** The two counters you edit your own collection with. */
+const steppersHTML = (c, q, f) => `
+  <div class="stepper">
+    <button type="button" data-act="dec" aria-label="Remove one" ${q === 0 ? 'disabled' : ''}>−</button>
+    <input type="number" min="0" max="99" value="${q}" data-act="qty"
+           aria-label="Copies of ${esc(c.name)} owned">
+    <button type="button" data-act="inc" aria-label="Add one">+</button>
+  </div>
+  <div class="stepper stepper-foil" title="Foil copies">
+    <button type="button" data-act="fdec" aria-label="Remove one foil" ${f === 0 ? 'disabled' : ''}>−</button>
+    <input type="number" min="0" max="99" value="${f}" data-act="fqty"
+           aria-label="Foil copies of ${esc(c.name)} owned">
+    <button type="button" data-act="finc" aria-label="Add one foil">+</button>
+    <span class="foil-tag" aria-hidden="true">✦</span>
+  </div>`;
+
+/**
+ * What the steppers become while visiting. The row keeps their height so the
+ * grid doesn't reflow into a different shape the moment you open a collection —
+ * cards you were looking at stay where they were.
+ */
+function haveHTML(q, f) {
+  const copies = q + f;
+  if (!copies) return `<div class="have is-none">Doesn't have this</div>`;
+  return `
+    <div class="have">
+      <b>${copies}</b> cop${copies === 1 ? 'y' : 'ies'}${
+        f ? ` <span class="have-foil" title="${f} foil${f === 1 ? '' : 's'}">${f}✦</span>` : ''
+      }
+    </div>`;
 }
 
 function render() {
@@ -421,12 +476,17 @@ function render() {
   el('empty').hidden = list.length > 0;
   el('result-count').textContent =
     `${list.length} card${list.length === 1 ? '' : 's'} shown`;
+  // Rebuilt here rather than only on entering a collection: the "vs yours" half
+  // of it goes stale the moment another device syncs a change of your own.
+  renderViewBar();
   renderStats();
   updateFilterBadge();
 }
 
 /** Refresh one tile in place so the grid doesn't jump while you tap +/−. */
 function refreshCard(id) {
+  // Nothing can change a guest's tile, and it has no steppers to write back to.
+  if (viewing) return;
   const node = grid.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
   if (!node) return;
   const q = qtyOf(id);
@@ -472,8 +532,11 @@ function refreshCard(id) {
  * Worth of everything owned, promos included — they sit outside set completion
  * but they're still money on the shelf. Also returns the per-card line values,
  * which the breakdown panel reuses rather than walking the collection twice.
+ *
+ * Takes the collection explicitly so the visiting bar can price yours and theirs
+ * in the same currency without swapping `viewing` in and out to do it.
  */
-function collectionValue() {
+function collectionValue(src = shown()) {
   let total = 0;
   let priced = 0;
   let unpriced = 0;
@@ -482,8 +545,8 @@ function collectionValue() {
   const lines = [];
 
   for (const c of CARDS) {
-    const q = qtyOf(c.id);
-    const f = foilOf(c.id);
+    const q = src[c.id]?.q || 0;
+    const f = src[c.id]?.f || 0;
     const copies = q + f;
     if (!copies) continue;
     const p = priceOf(c.id);
@@ -511,11 +574,34 @@ function collectionValue() {
   return { total, priced, unpriced, converted, lines };
 }
 
+/**
+ * The headline figures for any collection — yours or a visitor's. Promos are
+ * left out of `unique` for the same reason the completion percentage leaves them
+ * out (they aren't part of a set you can finish) but counted everywhere copies
+ * are, because a promo in a binder is still a card in a binder.
+ */
+function summarise(src) {
+  let unique = 0;
+  let copies = 0;
+  let foils = 0;
+  let wish = 0;
+  for (const c of COLLECTABLE) {
+    const e = src[c.id];
+    if (!e) continue;
+    const n = (e.q || 0) + (e.f || 0);
+    if (n > 0) {
+      unique++;
+      copies += n;
+      foils += e.f || 0;
+    }
+    if (e.w) wish++;
+  }
+  return { unique, copies, foils, wish };
+}
+
 function renderStats() {
-  const uniqueOwned = COLLECTABLE.filter((c) => copiesOf(c.id) > 0).length;
-  const totalCopies = COLLECTABLE.reduce((n, c) => n + copiesOf(c.id), 0);
-  const foilCopies = COLLECTABLE.reduce((n, c) => n + foilOf(c.id), 0);
-  const wishCount = COLLECTABLE.filter((c) => wishOf(c.id)).length;
+  const { unique: uniqueOwned, copies: totalCopies, foils: foilCopies, wish: wishCount } =
+    summarise(shown());
   const pct = COLLECTABLE.length
     ? Math.round((uniqueOwned / COLLECTABLE.length) * 100)
     : 0;
@@ -525,9 +611,12 @@ function renderStats() {
 
   // One control for the lot: the worth chip is also the handle for the panel
   // holding set progress and the per-card value breakdown. Without a price sync
-  // there's no figure to show, so the handle falls back to a plain label.
-  const toggleHTML = val
-    ? `<button type="button" class="stat-value" id="stat-toggle" aria-expanded="${open}"
+  // there's no figure to show, so the handle falls back to a plain label — and
+  // it falls back while visiting too, because the bar above is already reporting
+  // their worth next to yours, which is the more useful of the two figures.
+  const toggleHTML =
+    val && !viewing
+      ? `<button type="button" class="stat-value" id="stat-toggle" aria-expanded="${open}"
           aria-controls="stats-panel"
           title="${onCardmarket() ? 'Cardmarket' : 'TCGplayer'} value of every copy you own${
             val.unpriced ? ` · ${val.unpriced} copies have no price data` : ''
@@ -540,11 +629,12 @@ function renderStats() {
          <span class="stat-value-num">${money(val.total)}</span>
          <span class="stat-caret" aria-hidden="true">${open ? '▴' : '▾'}</span>
        </button>`
-    : `<button type="button" class="stat-value is-bare" id="stat-toggle" aria-expanded="${open}"
-          aria-controls="stats-panel" title="Completion per set">
-         <span class="stat-value-label">Set progress</span>
-         <span class="stat-caret" aria-hidden="true">${open ? '▴' : '▾'}</span>
-       </button>`;
+      : `<button type="button" class="stat-value is-bare" id="stat-toggle" aria-expanded="${open}"
+            aria-controls="stats-panel"
+            title="Completion per set${val ? ', and the cards carrying the value' : ''}">
+           <span class="stat-value-label">${viewing ? 'Their set progress' : 'Set progress'}</span>
+           <span class="stat-caret" aria-hidden="true">${open ? '▴' : '▾'}</span>
+         </button>`;
 
   // Only worth offering when the price file carries a rate to convert with.
   const currencyHTML =
@@ -568,15 +658,20 @@ function renderStats() {
             ).join('')}</select>`
       : '';
 
+  // Visiting, the same four counts are already in the bar above with yours
+  // beside them — so the line here keeps only the two controls rather than
+  // repeating them a second time three centimetres lower.
   el('statline').innerHTML =
     toggleHTML +
     currencyHTML +
-    `<span><b>${uniqueOwned}</b> / ${COLLECTABLE.length} unique <span class="pct">(${pct}%)</span></span>` +
-    `<span><b>${totalCopies}</b> total copies</span>` +
-    (foilCopies
-      ? `<span title="Counted inside the total, priced at the foil market"><b>${foilCopies}</b> foil</span>`
-      : '') +
-    `<span><b>${wishCount}</b> on wishlist</span>`;
+    (viewing
+      ? ''
+      : `<span><b>${uniqueOwned}</b> / ${COLLECTABLE.length} unique <span class="pct">(${pct}%)</span></span>` +
+        `<span><b>${totalCopies}</b> total copies</span>` +
+        (foilCopies
+          ? `<span title="Counted inside the total, priced at the foil market"><b>${foilCopies}</b> foil</span>`
+          : '') +
+        `<span><b>${wishCount}</b> on wishlist</span>`);
 
   const panel = el('stats-panel');
   panel.hidden = !open;
@@ -640,7 +735,9 @@ function valuePanelHTML(val) {
   return `
     <div class="value-panel">
       <div class="value-head">
-        <span class="value-label">Collection worth</span>
+        <span class="value-label">${
+          viewing ? `${esc(viewing.handle)}'s collection worth` : 'Collection worth'
+        }</span>
         <span class="value-big">${money(val.total)}</span>
         <span class="value-meta">
           ${val.priced.toLocaleString('en-US')} copies priced${
@@ -671,10 +768,143 @@ function valuePanelHTML(val) {
                <h4>Most valuable — ${share}% of the total</h4>
                <ol class="value-list">${rows}</ol>
              </div>`
-          : `<div class="value-top"><h4>Nothing owned yet</h4></div>`
+          : `<div class="value-top"><h4>${
+              viewing ? 'Nothing in this collection yet' : 'Nothing owned yet'
+            }</h4></div>`
       }
     </div>`;
 }
+
+/* ---------------- the visiting bar ---------------- */
+
+const viewBar = el('view-bar');
+
+/** Rough enough to answer "is this collection current?" and no more. */
+function agoText(iso) {
+  const then = Date.parse(iso || '');
+  if (!Number.isFinite(then)) return '';
+  const mins = Math.round((Date.now() - then) / 60000);
+  if (mins < 2) return 'updated just now';
+  if (mins < 60) return `updated ${mins} minutes ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `updated ${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.round(hours / 24);
+  if (days < 60) return `updated ${days} day${days === 1 ? '' : 's'} ago`;
+  return `updated ${Math.round(days / 30)} months ago`;
+}
+
+/**
+ * Their figure said in terms of yours. A ratio beats a difference here because
+ * two collections can sit an order of magnitude apart and "+1,204" tells you
+ * nothing about that — but a ratio needs a denominator, so an empty side of the
+ * comparison gets a sentence instead of a percentage.
+ */
+function versus(theirs, mine, fmtN = (n) => n.toLocaleString('en-US')) {
+  if (!mine) return theirs ? 'you have none yet' : 'neither of you';
+  const ratio = theirs / mine;
+  // Past a doubling a percentage stops being readable: "3,410% of yours" is a
+  // figure you have to decode, "34× yours" is one you can see. Below it the
+  // percentage is the better of the two — "89% of yours" beats "0.9× yours".
+  const rel =
+    ratio >= 2
+      ? `${ratio.toFixed(ratio < 10 ? 1 : 0)}× your`
+      : `${Math.round(ratio * 100)}% of your`;
+  return `${rel} ${fmtN(mine)}`;
+}
+
+/** Their headline figures, each with yours underneath it. */
+function renderViewBar() {
+  if (!viewing) {
+    viewBar.hidden = true;
+    viewBar.innerHTML = '';
+    return;
+  }
+
+  const theirs = summarise(viewing.data);
+  const mine = summarise(collection);
+  const when = agoText(viewing.updatedAt);
+
+  const stat = (label, value, vs) => `
+    <div class="vc">
+      <span class="vc-label">${label}</span>
+      <span class="vc-num">${value}</span>
+      <span class="vc-vs">${esc(vs)}</span>
+    </div>`;
+
+  const rows = [
+    stat(
+      'Unique cards',
+      `${theirs.unique.toLocaleString('en-US')} <small>/ ${COLLECTABLE.length}</small>`,
+      versus(theirs.unique, mine.unique)
+    ),
+    stat('Total copies', theirs.copies.toLocaleString('en-US'), versus(theirs.copies, mine.copies)),
+    stat('Foils', theirs.foils.toLocaleString('en-US'), versus(theirs.foils, mine.foils)),
+    stat('On wishlist', theirs.wish.toLocaleString('en-US'), versus(theirs.wish, mine.wish)),
+  ];
+
+  if (PRICE_DATA) {
+    const theirWorth = collectionValue(viewing.data).total;
+    const myWorth = collectionValue(collection).total;
+    rows.push(stat('Worth', money(theirWorth), versus(theirWorth, myWorth, money)));
+  }
+
+  viewBar.innerHTML = `
+    <div class="view-head">
+      <p class="view-who">
+        <span class="view-eye" aria-hidden="true">◍</span>
+        Looking through <b>${esc(viewing.handle)}</b>'s collection${
+          when ? ` <span class="view-when">${esc(when)}</span>` : ''
+        }
+      </p>
+      <button class="btn view-exit" type="button" data-view="exit">Back to mine</button>
+    </div>
+    <div class="view-compare">${rows.join('')}</div>
+    <p class="view-note">The search box, every filter and every sort work on their
+      cards while this is up. Nothing here can change either collection.</p>`;
+  viewBar.hidden = false;
+}
+
+/**
+ * Enter or leave visiting mode. `next` is `{ handle, data, updatedAt }`, and its
+ * `data` must already have been through sanitize() — it arrived over the network
+ * from another account, and an unrecognised card id is the least of what a blob
+ * from elsewhere could be carrying.
+ */
+function setViewing(next) {
+  viewing = next
+    ? {
+        handle: String(next.handle || 'A collector'),
+        data: next.data || {},
+        updatedAt: next.updatedAt || null,
+      }
+    : null;
+
+  // The deck builder, the pack opener and the exporters all speak about *your*
+  // collection. Leaving one of them up over someone else's cards would misstate
+  // whose they are, so the buttons go away (CSS) and anything already open is
+  // closed here.
+  if (viewing) {
+    deckModal.close();
+    packModal.close();
+    cardModal.close();
+    setMenu(false);
+  }
+
+  document.body.classList.toggle('is-viewing', !!viewing);
+  render();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+
+  // Announced rather than called: the address bar wants to follow this, and
+  // "Back to mine" is a button app.js owns, so an event is what lets social.js
+  // keep the ?u= link in step without app.js knowing a URL is involved.
+  document.dispatchEvent(
+    new CustomEvent('riftbound:viewing', { detail: viewing ? { handle: viewing.handle } : null })
+  );
+}
+
+viewBar.addEventListener('click', (e) => {
+  if (e.target.closest('[data-view="exit"]')) setViewing(null);
+});
 
 /* ---------------- card detail ---------------- */
 
@@ -847,6 +1077,48 @@ function detailPrices(card) {
   </div>`;
 }
 
+/** The counters and the wishlist toggle, for a card in your own collection. */
+const detailSteppersHTML = (q, f, w) => `
+  <div class="detail-own">
+    <div class="stepper">
+      <button type="button" data-detail="dec" aria-label="Remove one" ${q === 0 ? 'disabled' : ''}>−</button>
+      <input type="number" min="0" max="99" value="${q}" data-detail="qty" aria-label="Copies owned">
+      <button type="button" data-detail="inc" aria-label="Add one">+</button>
+    </div>
+    <div class="stepper stepper-foil" title="Foil copies">
+      <button type="button" data-detail="fdec" aria-label="Remove one foil" ${f === 0 ? 'disabled' : ''}>−</button>
+      <input type="number" min="0" max="99" value="${f}" data-detail="fqty" aria-label="Foil copies owned">
+      <button type="button" data-detail="finc" aria-label="Add one foil">+</button>
+      <span class="foil-tag" aria-hidden="true">✦</span>
+    </div>
+    <button class="btn btn-quiet detail-wish ${w ? 'on' : ''}" type="button"
+            data-detail="wish" aria-pressed="${w}">${w ? '★ Wishlisted' : '☆ Wishlist'}</button>
+  </div>`;
+
+/**
+ * Both sides at once. The grid has room for one number per tile, so this is the
+ * one place that can answer what you actually opened someone else's card to ask:
+ * they have this many, and you have that many.
+ */
+const detailCompareHTML = (q, f, w, mineQ, mineF) => `
+  <div class="detail-own is-visiting">
+    <span class="detail-have">
+      <b>${esc(viewing.handle)}</b>
+      ${q + f ? `has <b>${q + f}</b>${f ? ` <span class="have-foil">${f}✦</span>` : ''}` : 'has none'}
+      ${w ? '<span class="wish-mark" title="On their wishlist">★</span>' : ''}
+    </span>
+    <span class="detail-have is-mine">
+      You
+      ${
+        mineQ + mineF
+          ? `have <b>${mineQ + mineF}</b>${
+              mineF ? ` <span class="have-foil">${mineF}✦</span>` : ''
+            }`
+          : 'have none'
+      }
+    </span>
+  </div>`;
+
 function renderCardDetail() {
   const card = CARDS.find((c) => c.id === detailId);
   const body = el('card-modal-body');
@@ -858,6 +1130,9 @@ function renderCardDetail() {
   const q = qtyOf(card.id);
   const f = foilOf(card.id);
   const w = wishOf(card.id);
+  // Only read while visiting, where `q`/`f` above are the other collector's.
+  const mineQ = collection[card.id]?.q || 0;
+  const mineF = collection[card.id]?.f || 0;
   const img = card.image_full || card.image || '';
   const num = String(card.collector_number).padStart(3, '0') + (card.variant || '');
   const typeLine = [card.supertype, card.type].filter(Boolean).join(' ');
@@ -895,21 +1170,7 @@ function renderCardDetail() {
 
       ${detailPrices(card)}
 
-      <div class="detail-own">
-        <div class="stepper">
-          <button type="button" data-detail="dec" aria-label="Remove one" ${q === 0 ? 'disabled' : ''}>−</button>
-          <input type="number" min="0" max="99" value="${q}" data-detail="qty" aria-label="Copies owned">
-          <button type="button" data-detail="inc" aria-label="Add one">+</button>
-        </div>
-        <div class="stepper stepper-foil" title="Foil copies">
-          <button type="button" data-detail="fdec" aria-label="Remove one foil" ${f === 0 ? 'disabled' : ''}>−</button>
-          <input type="number" min="0" max="99" value="${f}" data-detail="fqty" aria-label="Foil copies owned">
-          <button type="button" data-detail="finc" aria-label="Add one foil">+</button>
-          <span class="foil-tag" aria-hidden="true">✦</span>
-        </div>
-        <button class="btn btn-quiet detail-wish ${w ? 'on' : ''}" type="button"
-                data-detail="wish" aria-pressed="${w}">${w ? '★ Wishlisted' : '☆ Wishlist'}</button>
-      </div>
+      ${viewing ? detailCompareHTML(q, f, w, mineQ, mineF) : detailSteppersHTML(q, f, w)}
 
       <div class="detail-links">
         <a class="btn" href="${esc(cardmarketUrl(card))}" target="_blank" rel="noopener noreferrer">
@@ -1008,7 +1269,10 @@ el('search').addEventListener('input', (e) => {
 document.addEventListener('keydown', (e) => {
   const search = el('search');
   // The dialogs trap focus; leave the browser's own find bar alone in there.
-  if (deckModal.open || packModal.open || cardModal.open) return;
+  // Asked of the document rather than of a named list, so a dialog added later
+  // — the collector browser was one — is covered without anyone remembering to
+  // come back and add it here.
+  if (document.querySelector('dialog[open]')) return;
 
   if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key?.toLowerCase() === 'f') {
     e.preventDefault();
@@ -2133,13 +2397,17 @@ function toast(msg) {
 /* ---------------- cloud seam ---------------- */
 
 /**
- * The whole surface cloud.js is allowed to touch. Keeping it to four functions
- * means sync stays an add-on: delete cloud.js and the config file and the app is
- * exactly the local-only tracker it started as.
+ * The whole surface cloud.js and social.js are allowed to touch. Keeping it this
+ * small means both stay add-ons: delete the two files and the config and the app
+ * is exactly the local-only tracker it started as, with nothing to unpick.
  */
 window.RiftboundApp = {
   getCollection: () => collection,
-  /** Replaces the collection with server data and redraws. Never echoes back. */
+  /**
+   * Replaces the collection with server data and redraws. Never echoes back.
+   * Always your own collection — a visitor's arrives through setViewing, which
+   * is the difference between reading someone's binder and overwriting yours.
+   */
   applyCollection(next) {
     collection = sanitize(next).clean;
     persist({ fromCloud: true });
@@ -2147,6 +2415,9 @@ window.RiftboundApp = {
   },
   sanitize: (incoming) => sanitize(incoming).clean,
   toast,
+  setViewing,
+  /** The handle currently being visited, or null. */
+  viewingHandle: () => viewing?.handle || null,
 };
 
 /* ---------------- init ---------------- */

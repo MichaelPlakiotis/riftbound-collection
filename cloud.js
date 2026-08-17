@@ -133,6 +133,36 @@
   let pushTimer;
   let lastRefresh = 0;
 
+  /* ---------------- who's signed in, for anyone who asks ---------------- */
+
+  /**
+   * social.js needs the same session this file already resolves, and resolving
+   * it twice would mean two clients racing each other to refresh one token. So
+   * the session lives here and is published; `authReady` exists because a
+   * subscriber that arrives after sign-in still has to be told about it, and a
+   * subscriber that arrives while the answer is "definitely nobody" has to be
+   * told that too, or it waits forever for a callback that isn't coming.
+   */
+  const watchers = new Set();
+  let authReady = false;
+
+  function announceUser() {
+    authReady = true;
+    for (const fn of watchers) {
+      try {
+        fn(user);
+      } catch {
+        /* one bad subscriber shouldn't stop the others hearing about it */
+      }
+    }
+  }
+
+  /** Calls back now if the session is already known, and on every change after. */
+  function onUser(fn) {
+    watchers.add(fn);
+    if (authReady) fn(user);
+  }
+
   async function reconcile({ announce = false } = {}) {
     if (!user) return;
     const local = App.getCollection();
@@ -209,7 +239,7 @@
     }, PUSH_DELAY);
   }
 
-  window.RiftboundCloud = { onLocalChange };
+  window.RiftboundCloud = { onLocalChange, client, onUser, ensureAuth };
 
   // Coming back to the tab is the natural moment to notice another device's edits.
   document.addEventListener('visibilitychange', () => {
@@ -408,6 +438,7 @@
       const changed = next?.id !== user?.id;
       user = next;
       paintButton();
+      announceUser();
       if (!user) return;
       // SIGNED_IN also fires on token refresh; only resync when the user changed.
       if (changed) reconcile({ announce: event === 'SIGNED_IN' });
@@ -418,9 +449,30 @@
       paintButton();
       reconcile();
     }
+    announceUser();
   }
 
-  if (hasStoredSession()) watchAuth().catch(() => {});
+  /**
+   * Idempotent: three separate things now want the session resolved — a stored
+   * token at load, the account button, and social.js — and registering
+   * onAuthStateChange once per caller would run every sync three times over.
+   */
+  let authPromise;
+  function ensureAuth() {
+    authPromise ||= watchAuth().catch(() => {
+      // Nobody is signed in as far as anything downstream is concerned; say so
+      // rather than leaving subscribers waiting on a resolution that failed.
+      announceUser();
+    });
+    return authPromise;
+  }
+
+  if (hasStoredSession()) ensureAuth();
+  // Nothing to restore: settle the question now, without waking Supabase up, so
+  // a subscriber knows it's looking at a signed-out visitor rather than a
+  // pending answer.
+  else announceUser();
+
   // A click on the account button needs the listener wired up too.
-  accountBtn.addEventListener('click', () => watchAuth().catch(() => {}), { once: true });
+  accountBtn.addEventListener('click', ensureAuth, { once: true });
 })();
