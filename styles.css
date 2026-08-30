@@ -1910,6 +1910,81 @@ main { padding: 16px 20px 60px; }
 }
 .collectors-icon { color: var(--accent); font-size: 15px; line-height: 1; }
 
+/* ---------- import review ---------- */
+
+.import-modal {
+  width: min(520px, 94vw);
+  max-height: min(680px, 88vh);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+/* Needs the [open] guard — a bare display:flex would defeat dialog's own hiding. */
+.import-modal[open] { display: flex; flex-direction: column; }
+.import-modal::backdrop { background: rgba(5, 8, 12, .72); backdrop-filter: blur(3px); }
+
+.import-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 18px 18px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.import-head h2 { margin: 0 0 4px; font-size: 17px; }
+.import-sub { margin: 0; font-size: 12.5px; color: var(--text-dim); }
+.import-head .icon-btn { margin-left: auto; flex: none; }
+
+.import-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px;
+}
+
+.import-figs { display: flex; gap: 8px; flex-wrap: wrap; }
+.import-fig {
+  flex: 1 1 120px;
+  padding: 10px 12px;
+  background: var(--bg-raise);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.import-fig b { display: block; font-size: 20px; line-height: 1.2; color: var(--accent); }
+.import-fig span { font-size: 12px; color: var(--text-dim); }
+
+/* What the file couldn't tell us. Deliberately not styled as an error — a few
+   unmatched rows is the normal outcome, not a failure. */
+.import-note {
+  margin: 14px 0 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+.import-note b { color: var(--text); }
+
+.import-choices {
+  margin: 16px 0 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-dim);
+}
+.import-choices li + li { margin-top: 8px; }
+.import-choices b { color: var(--text); }
+
+.import-actions {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 14px 18px;
+  border-top: 1px solid var(--line-soft);
+}
+
 .collectors-modal {
   width: min(460px, 94vw);
   max-height: min(680px, 88vh);
@@ -2184,11 +2259,19 @@ body.is-viewing #btn-import { display: none; }
   .vc-vs { font-size: 10.5px; }
   .view-exit { width: 100%; text-align: center; }
 
-  .collectors-modal {
-    width: 100vw;
-    max-width: 100vw;
+  /* 100% rather than 100vw: a modal dialog is laid out against the viewport
+     minus the scrollbar, while `vw` counts the scrollbar in — worth about 15px
+     of the right-hand edge sliding off screen. */
+  .collectors-modal,
+  .import-modal {
+    width: 100%;
+    max-width: 100%;
     height: 100dvh;
     max-height: 100dvh;
     border-radius: 0;
   }
+  /* Three actions won't sit on one phone row, and the safe one shouldn't be the
+     easiest to hit by accident — so they stack with Add on top. */
+  .import-actions { flex-direction: column-reverse; }
+  .import-actions .btn { width: 100%; }
 }

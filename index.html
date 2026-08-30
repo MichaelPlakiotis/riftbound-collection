@@ -70,7 +70,10 @@
         </div>
       </div>
       <button id="btn-import" class="btn" type="button">Import</button>
-      <input id="file-import" type="file" accept="application/json" hidden>
+      <!-- Anything a tracker exports is worth a try; app.js works out what it is
+           rather than trusting the extension. -->
+      <input id="file-import" type="file" hidden
+             accept=".json,.csv,.txt,.tsv,application/json,text/csv,text/plain">
       <!-- cloud.js removes this button when no Supabase project is configured. -->
       <button id="btn-account" class="btn btn-account" type="button"
               title="Sign in to sync your collection">Sign in</button>
@@ -245,6 +248,27 @@
   </div>
 
   <div class="collectors-list" id="collectors-list"></div>
+</dialog>
+
+<!-- Import stops to show its working. A file from another tracker never lands
+     cleanly, and which rows didn't make it is the thing worth seeing before the
+     collection changes — as is which of the two ways to apply it you meant. -->
+<dialog id="import-modal" class="import-modal">
+  <header class="import-head">
+    <div>
+      <h2>Import collection</h2>
+      <p class="import-sub" id="import-sub"></p>
+    </div>
+    <button id="import-close" class="icon-btn" type="button" aria-label="Close">✕</button>
+  </header>
+
+  <div class="import-body" id="import-body"></div>
+
+  <footer class="import-actions">
+    <button id="import-cancel" class="btn btn-quiet" type="button">Cancel</button>
+    <button id="import-replace" class="btn" type="button">Replace my collection</button>
+    <button id="import-add" class="btn btn-primary" type="button">Add to my collection</button>
+  </footer>
 </dialog>
 
 <div id="toast" class="toast" hidden></div>

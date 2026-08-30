@@ -89,16 +89,111 @@ No server, no build step, no install — opening `index.html` locally works too.
 
   | Format | What it's for |
   | --- | --- |
-  | **JSON** | Full backup — the only format Import reads back |
-  | **CSV** | Spreadsheets. One row per *printing*, so a card you hold in both finishes gets a normal row and a foil row: card id, set code, printed number, quantity, foil, wishlist flag, rarity, type, domains, unit/total price in the currency currently selected, and the name. Each row is priced as the printing it is. UTF-8 BOM so Excel doesn't mangle card names. It is the only export with prices in it, and the only one no other tracker recognises — see below |
+  | **JSON** | Full backup. The only format that carries this app's own card ids, so it's the only one that can't lose a printing |
+  | **CSV** | Spreadsheets. One row per *printing*, so a card you hold in both finishes gets a normal row and a foil row: card id, set code, printed number (with its treatment marker, `007a`), quantity, foil, wishlist flag, rarity, type, domains, unit/total price in the currency currently selected, and the name. Each row is priced as the printing it is. UTF-8 BOM so Excel doesn't mangle card names. It is the only export with prices in it, and the only one no other tracker recognises — see below |
   | **riftbound.gg** | Four columns shaped for [riftbound.gg](https://riftbound.gg/collection/)'s collection importer, one row per printing. See below |
   | **Other trackers** | The RiftCore collection shape, which is what the rest of the ecosystem sniffs for — one row per card with `Standard Qty` and `Foil Qty` in their own columns. This is the file to hand [OpenRift](https://openrift.app), and through it Piltover Archive and RiftMana. See [Exporting to other trackers](#exporting-to-other-trackers) |
-  | **Text** | Readable list grouped by set — `3x Ashe, Frost Archer (OGN 012)`, with `[1 foil]` appended when some are — and a wishlist section at the end |
+  | **Text** | Readable list grouped by set — `3x Ashe, Frost Archer (OGN 012)`, with `[1 foil]` appended when some are — and a wishlist section at the end. The number carries its treatment marker (`OGN 007a`), which is what lets this list be read back in full |
   | **TCGplayer mass entry** | `3 Ashe, Frost Archer` lines for bulk-add boxes. Owned copies only, foils included in the count; a wishlist card has no quantity to enter |
 
-  Everything but JSON is one-way and identifies cards the way they're printed
-  (set code + zero-padded collector number) rather than by this app's internal
-  ids, which is what makes them readable somewhere else.
+  Everything but JSON identifies cards the way they're printed — set code plus
+  zero-padded collector number — rather than by this app's internal ids, which is
+  what makes them readable somewhere else. **Import reads all of them back**, and
+  a good deal it never wrote; see [Importing](#importing).
+
+### Importing
+
+Import used to read one format — its own JSON — and apply it one way, by
+replacing everything. It now takes anything a Riftbound tracker or a spreadsheet
+is likely to produce, shows what it made of the file, and asks how to apply it.
+
+**It reads roles, not formats.** Every collection CSV in this ecosystem is the
+same handful of columns under different names: OpenRift's `Finish`, Piltover
+Archive's `Variant Label` and our own `Foil` all answer one question, and
+`Standard Qty`/`Normal Qty` are the same column twice. So rather than four
+vendor parsers, there is one reader that finds its own header row — anywhere in
+the first twelve, which is what steps over RiftCore's preamble — and works out
+what each column *means*. A row has to name something identifying **and**
+something countable before it counts as a header, which is what keeps a title
+line or a totals row from being mistaken for one.
+
+The upshot is that a tracker nobody here has heard of imports too, as long as it
+names its columns plainly. Verified against files in all four shapes plus a
+semicolon-separated sheet and unpadded codes — every one read, every card
+resolved:
+
+| File | Read as | Result |
+| --- | --- | --- |
+| OpenRift | `Card ID` + `Finish` + `Quantity` | 5/5 cards, foils kept |
+| Piltover Archive | `Variant Number` (with its `-Foil` suffix) | 5/5 cards, foils kept |
+| RiftMana | `Normal Qty` + `Foil Qty` | 5/5 cards, foils kept |
+| RiftCore | preamble, then split quantities | 5/5 cards, foils kept |
+| A semicolon-separated sheet | separator sniffed, not assumed | 5/5 cards, foils kept |
+| `3 Ashe, Frost Archer` lines | a plain card list | 5/5 cards, no foil column to read |
+
+Codes are matched leniently, since no two tools spell one the same way: a
+trailing `-Foil` or `-p`, RiftCore's `S` where the game prints a star, a number
+that was never zero-padded, and a rune's printed `R05` beside the plain `005` our
+own exports write all land on the same card.
+
+#### When a code isn't enough
+
+69 codes are shared by more than one of our cards, so a code alone can't always
+decide. Two things break the tie before anything is guessed:
+
+- **The name, but only inside the set the code named.** Our text export writes
+  `9x Fury Rune (Alternate Art) (OGN 007)`, where the number can't tell the two
+  printings apart but the name can. A reprint in another set is not allowed to
+  win an argument it isn't in.
+- **The number column, when it's the more specific one.** Our CSV pairs a
+  riftbound.gg-shaped `OGN-007` with a `Card Number` of `007a`; RiftCore does the
+  reverse, `OGN-007A` beside a bare `007`. Both columns are tried, and carrying a
+  treatment marker is what decides which goes first.
+
+Whatever is left genuinely ambiguous goes to the earliest-printed card and is
+**reported as a count** in the review, rather than resolved silently.
+
+#### Add or Replace
+
+The review shows what the file holds, what didn't match, and what each choice
+would do to the numbers — then offers two:
+
+- **Add** stacks the counts on top of what you have. Two devices' binders
+  combine. Importing the same file twice counts it twice, which the dialog says
+  in as many words.
+- **Replace** clears the collection first, leaving only the file. This is what
+  restoring a backup wants, and it's what Import used to do without asking.
+
+Rows that resolve to the same card add up rather than overwriting, so a normal
+row and a foil row for one card — how our CSV and OpenRift's file both spell a
+stack — arrive as one entry with both counts.
+
+#### What survives a round trip
+
+Exporting the whole 1411-card catalogue at 2 normal + 1 foil and importing it
+straight back:
+
+| Format | Cards back exactly | Copies back |
+| --- | --- | --- |
+| JSON | 1411 / 1411 | 4233 / 4233 |
+| Text | 1411 / 1411 | 4233 / 4233 |
+| CSV | 1379 / 1411 | 4233 / 4233 |
+| Other trackers | 1379 / 1411 | 4233 / 4233 |
+| riftbound.gg | 1091 / 1411 | 4233 / 4233 |
+| TCGplayer mass entry | — | 4233 / 4233, all as non-foil |
+
+Every copy comes home in every format; what a lossy one costs is *which
+printing* it lands on. The 32 the CSV and the tracker file give up are the
+genuine collisions — Organized Play waves that share a collector number and a
+name, where nothing in the file can separate them. riftbound.gg's four columns
+carry neither a treatment marker nor a treatment in the name, by design, because
+their catalogue files one entry per collector number. The mass-entry list has no
+syntax for a printing at all, so it comes back as one non-foil pile.
+
+Two exports changed to make this work, both in the direction of being more
+correct anyway: the CSV's `Card Number` and the text list's `(OGN 007)` now carry
+the treatment marker the way the grid prints it — `007a` — since without it a
+card and its alternate art are the same row.
 
 ### Importing into riftbound.gg
 

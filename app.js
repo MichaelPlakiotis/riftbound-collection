@@ -1435,7 +1435,7 @@ document.addEventListener('keydown', (e) => {
   // both it and the panel it's sitting in.
   if (
     e.key === 'Escape' && menuOpen() && !exportOpen() &&
-    !deckModal.open && !packModal.open && !cardModal.open
+    !deckModal.open && !packModal.open && !cardModal.open && !importModal.open
   ) {
     setMenu(false);
   }
@@ -1527,8 +1527,15 @@ function printingRows(rows) {
 
 const setNameOf = (id) => META.sets.find((s) => s.id === id)?.name || id;
 
-/** Card number as it's printed and as other trackers expect it: zero-padded. */
+/** Card number as other trackers expect it: zero-padded, treatment dropped. */
 const cardNo = (card) => String(card.collector_number).padStart(3, '0');
+
+/**
+ * The number with its treatment marker, the way the grid prints it — `007a` for
+ * an alternate art. Anything meant to be read back has to carry it, or a card
+ * and its alternate art are the same row.
+ */
+const printedNo = (card) => `${cardNo(card)}${card.variant || ''}`;
 
 /**
  * The id riftbound.gg (dotgg) files cards under: set code, dash, padded number —
@@ -1597,7 +1604,10 @@ const EXPORT_FORMATS = {
         const unit = p == null ? '' : p.toFixed(2);
         const total = p == null ? '' : (p * r.qty).toFixed(2);
         return [
-          dotggId(r.card), r.card.set_id, setNameOf(r.card.set_id), cardNo(r.card),
+          // Card Number carries the treatment marker the riftbound.gg-shaped
+          // Card ID beside it has to leave out — `007a`, the way the grid prints
+          // it — so this file can be read back without 007 and 007a merging.
+          dotggId(r.card), r.card.set_id, setNameOf(r.card.set_id), printedNo(r.card),
           r.qty, r.foil ? 'yes' : 'no', r.w ? 'yes' : 'no',
           r.card.rarity, r.card.type, r.card.domains.join(' / '), unit, total, plainName(r.card),
         ].map(csvCell).join(',');
@@ -1704,12 +1714,15 @@ const EXPORT_FORMATS = {
         // Foils are called out inline rather than given their own line, so the
         // list still reads as one row per card the way a binder does.
         const foil = r.f ? ` [${r.f} foil]` : '';
-        out.push(`${r.q + r.f}x ${r.card.name} (${set} ${cardNo(r.card)})${foil}`);
+        // The number carries its treatment marker, the way the grid prints it —
+        // without it `007` names both the card and its alternate art, and the
+        // list can't be read back into a collection.
+        out.push(`${r.q + r.f}x ${r.card.name} (${set} ${printedNo(r.card)})${foil}`);
       }
 
       if (wished.length) {
         out.push('', 'Wishlist', '--------');
-        for (const r of wished) out.push(`${r.card.name} (${r.card.set_id} ${cardNo(r.card)})`);
+        for (const r of wished) out.push(`${r.card.name} (${r.card.set_id} ${printedNo(r.card)})`);
       }
       return `${out.join('\n')}\n`;
     },
@@ -1823,31 +1836,552 @@ document.addEventListener('keydown', (e) => {
   exportBtn.focus();
 });
 
+/* ---------------- import ---------------- */
+
+/**
+ * A file arriving here was written by something else, so nothing about it is
+ * taken on trust. Rather than recognising four vendors' formats by signature,
+ * the reader finds its own header row and works out what each column *means* —
+ * every collection CSV in this ecosystem is the same handful of columns under
+ * different names, and OpenRift's `Finish`, Piltover Archive's `Variant Label`
+ * and our own `Foil` all answer one question. A tracker nobody here has heard
+ * of imports too, as long as it names its columns plainly.
+ */
+
+const normName = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+/**
+ * Rows of cells. Quoted fields, embedded commas and newlines, `""` escapes. The
+ * separator is sniffed rather than assumed: a spreadsheet saved anywhere the
+ * comma is a decimal point writes semicolons, and plenty of tools write tabs.
+ */
+function readCSV(text) {
+  const src = text.replace(/^\uFEFF/, '');
+  const first = src.split('\n').find((l) => l.trim()) || '';
+  const count = (ch) => first.split(ch).length - 1;
+  const sep = count('\t') > count(',') ? '\t' : count(';') > count(',') ? ';' : ',';
+
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let quoted = false;
+
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (quoted) {
+      // A doubled quote inside a quoted field is one literal quote.
+      if (ch !== '"') cell += ch;
+      else if (src[i + 1] === '"') { cell += '"'; i++; }
+      else quoted = false;
+      continue;
+    }
+    if (ch === '"') quoted = true;
+    else if (ch === sep) { row.push(cell); cell = ''; }
+    else if (ch === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+    else if (ch !== '\r') cell += ch;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+
+  // A blank line carries nothing, and a preamble tends to leave several.
+  return rows.filter((r) => r.some((c) => c.trim()));
+}
+
+/**
+ * Header names seen in the wild, by what they mean. Order matters twice: roles
+ * are claimed in the order listed here, and within a role the first alias that
+ * appears wins — so RiftCore's `Card ID` takes the code and leaves its
+ * `Card Number` alone, while a file with only a bare number still has something
+ * to try.
+ */
+const IMPORT_COLUMNS = {
+  code: ['card id', 'cardid', 'card_id', 'variant number', 'printing', 'code', 'id', 'card number', 'number'],
+  // Claimed only when something better already took the id, which is exactly
+  // when it's useful: a `Card ID` that drops the treatment marker beside a
+  // `Card Number` that keeps it is the one chance to tell 007 from 007a.
+  num: ['card number', 'collector number', 'collector no', 'number', 'no'],
+  name: ['card name', 'cardname', 'card', 'name'],
+  normal: ['standard qty', 'normal qty', 'non-foil qty', 'nonfoil qty', 'regular qty'],
+  foilQty: ['foil qty', 'foil quantity', 'foils'],
+  qty: ['quantity', 'qty', 'count', 'owned', 'copies', 'total qty'],
+  finish: ['finish', 'foil', 'variant label', 'variant type', 'treatment', 'printing type'],
+  wish: ['wishlist', 'want', 'wanted', 'wishlisted'],
+  set: ['set code', 'set prefix', 'set'],
+};
+
+const headerKey = (s) => String(s).trim().toLowerCase().replace(/\s+/g, ' ');
+
+/**
+ * Maps a candidate header row to `{ role: columnIndex }`, or null when it isn't
+ * a header at all. A row has to name something identifying *and* something
+ * countable to qualify, which is what keeps a title line, a preamble banner or
+ * a spreadsheet's totals row from being read as columns.
+ */
+function columnRoles(cells) {
+  const headers = cells.map(headerKey);
+  const roles = {};
+  const claimed = new Set();
+
+  for (const [role, aliases] of Object.entries(IMPORT_COLUMNS)) {
+    for (const alias of aliases) {
+      const i = headers.indexOf(alias);
+      if (i !== -1 && !claimed.has(i)) {
+        roles[role] = i;
+        claimed.add(i);
+        break;
+      }
+    }
+  }
+
+  const identifies = roles.code !== undefined || roles.name !== undefined;
+  const counts = roles.qty !== undefined || roles.normal !== undefined || roles.foilQty !== undefined;
+  return identifies && counts ? roles : null;
+}
+
+/** The first row that reads as a header, within reach of a preamble. */
+function findHeader(rows) {
+  for (let i = 0; i < Math.min(rows.length, 12); i++) {
+    const roles = columnRoles(rows[i]);
+    if (roles) return { at: i, roles };
+  }
+  return null;
+}
+
+/**
+ * Every spelling of a printing we answer to, built once and kept. Values are
+ * arrays because 69 codes and 152 names are shared by more than one of our cards
+ * — Organized Play waves reusing collector numbers, reprints sharing a name — so
+ * the importer can report a row as ambiguous instead of picking in silence.
+ * CARDS is already in set-then-number order, making the first entry the
+ * earliest-printed card, which is the pick.
+ */
+let importLookup = null;
+
+function buildImportLookup() {
+  const byCode = new Map();
+  const byName = new Map();
+  const add = (map, key, card) => {
+    if (!key) return;
+    const list = map.get(key);
+    if (list) list.push(card);
+    else map.set(key, [card]);
+  };
+
+  for (const card of CARDS) {
+    const set = card.set_id.toLowerCase();
+    // The id carries Riftcodex's own number segment, which is how a rune keeps
+    // the printed `R05` alongside the plain `005` our own exports write.
+    const seg = card.id.split('~')[0].split('-')[1] || '';
+    add(byCode, `${set}-${cardNo(card)}${card.variant || ''}`, card);
+    if (seg && seg !== `${cardNo(card)}${card.variant || ''}`) add(byCode, `${set}-${seg}`, card);
+    add(byName, normName(card.name), card);
+    const plain = normName(plainName(card));
+    if (plain !== normName(card.name)) add(byName, plain, card);
+  }
+  return { byCode, byName };
+}
+
+/**
+ * The spellings of one incoming code worth trying, best first, plus whatever the
+ * code itself said about the finish. Piltover Archive hangs `-Foil` off the end
+ * of its variant number, RiftMana marks a promo with `-p`, RiftCore writes `S`
+ * where the game prints a star, and a collector number may or may not be padded.
+ */
+function codeKeys(raw) {
+  let s = String(raw || '').trim().toLowerCase().replace(/\s+/g, '');
+  let foil = false;
+  if (s.endsWith('-foil')) { foil = true; s = s.slice(0, -5); }
+  s = s.replace(/-(?:p|promo)$/, '');
+  if (!s) return { keys: [], foil };
+
+  const m = /^([a-z]{2,4})-?([a-z]*)(\d+)([a-z*]?)$/.exec(s);
+  if (!m) return { keys: [s], foil };
+
+  const [, set, prefix, digits, rawMark] = m;
+  const mark = rawMark === 's' ? '*' : rawMark;
+  const pad = digits.padStart(3, '0');
+  const keys = [];
+  const push = (k) => { if (!keys.includes(k)) keys.push(k); };
+  push(`${set}-${prefix}${digits}${mark}`);
+  push(`${set}-${prefix}${pad}${mark}`);
+  push(`${set}-${prefix}${pad}`);
+  push(`${set}-${pad}${mark}`);
+  push(`${set}-${pad}`);
+  return { keys, foil };
+}
+
+/** Reads a foil/finish cell however the file spells it. */
+const readsAsFoil = (v) => /^(1|y|yes|true|foil|holo|premium)\b/i.test(String(v || '').trim());
+const readsAsTrue = (v) => /^(1|y|yes|true)\b/i.test(String(v || '').trim());
+
+const readCount = (v) => {
+  const n = parseInt(String(v ?? '').replace(/[^\d]/g, ''), 10);
+  return Number.isFinite(n) ? Math.min(99, n) : 0;
+};
+
+/**
+ * Accumulates resolved rows into a collection-shaped map, keeping both the
+ * counts that landed and the rows that didn't. Two rows for one card — a normal
+ * row and a foil row, which is how our own CSV and OpenRift's file spell a
+ * stack — add up rather than the second overwriting the first.
+ */
+function makeTally() {
+  const tally = {
+    entries: {},
+    unresolved: [],
+    read: 0,
+    ambiguous: 0,
+    /** `hit` is one of our cards, or null when nothing answered to the row. */
+    take(hit, label, { q = 0, f = 0, w = false } = {}) {
+      if (!q && !f && !w) return;
+      tally.read++;
+      if (!hit) {
+        if (tally.unresolved.length < 400) tally.unresolved.push(label);
+        return;
+      }
+      const cur = tally.entries[hit.id] || { q: 0, f: 0, w: false };
+      tally.entries[hit.id] = {
+        q: Math.min(99, cur.q + q),
+        f: Math.min(99, cur.f + f),
+        w: cur.w || w,
+      };
+    },
+  };
+  return tally;
+}
+
+/**
+ * Resolves a row to one of our cards. A code that answers for exactly one card
+ * settles it. Otherwise the name gets a turn, because a name pointing at a
+ * single card beats a code pointing at several — our own text export keeps
+ * `(Alternate Art)` in the name where the `(OGN 007)` beside it can't tell the
+ * two printings apart. The name is only allowed to decide within the set the
+ * code named, or a reprint elsewhere would win an argument it isn't in.
+ */
+function resolveCard(code, name) {
+  importLookup ||= buildImportLookup();
+  const { keys } = codeKeys(code);
+
+  let byCode = null;
+  for (const key of keys) {
+    const hit = importLookup.byCode.get(key);
+    if (hit) { byCode = hit; break; }
+  }
+  if (byCode?.length === 1) return { card: byCode[0], ambiguous: false };
+
+  const named = importLookup.byName.get(normName(name)) || [];
+  const set = keys[0]?.split('-')[0];
+  const fitting = set ? named.filter((c) => c.set_id.toLowerCase() === set) : named;
+  if (fitting.length === 1) return { card: fitting[0], ambiguous: false };
+
+  if (byCode) return { card: byCode[0], ambiguous: true };
+  if (named.length) return { card: named[0], ambiguous: named.length > 1 };
+  return { card: null, ambiguous: false };
+}
+
+/** A table, read by what its columns mean rather than by whose format it is. */
+function importTable(rows) {
+  const header = findHeader(rows);
+  if (!header) return null;
+
+  const { at, roles } = header;
+  const tally = makeTally();
+  const cell = (row, role) =>
+    roles[role] === undefined ? '' : String(row[roles[role]] ?? '').trim();
+
+  for (let i = at + 1; i < rows.length; i++) {
+    const row = rows[i];
+    let code = cell(row, 'code');
+    const name = cell(row, 'name');
+    // RiftCore repeats its banner under the header rather than above it.
+    if (/^exported from/i.test(code)) continue;
+
+    // A file that split the set into its own column — or that only had a bare
+    // collector number to give — gets them put back together.
+    if (code && !code.includes('-')) {
+      const set = cell(row, 'set');
+      if (/^[a-z]{2,4}$/i.test(set)) code = `${set}-${code}`;
+    }
+
+    const foil = codeKeys(code).foil || readsAsFoil(cell(row, 'finish'));
+    // Two count columns is the shape that needs no inference — it's how this app
+    // stores a stack, and how RiftCore and RiftMana write one.
+    const split = roles.normal !== undefined || roles.foilQty !== undefined;
+    const total = readCount(cell(row, 'qty'));
+    const q = split ? readCount(cell(row, 'normal')) : foil ? 0 : total;
+    const f = split ? readCount(cell(row, 'foilQty')) : foil ? total : 0;
+    const w = roles.wish !== undefined && readsAsTrue(cell(row, 'wish'));
+
+    // Either column can be the more specific one. Our own CSV pairs a
+    // riftbound.gg-shaped `OGN-007` with a `007a` that still knows which
+    // printing it is; RiftCore does the reverse, `OGN-007A` beside a bare `007`.
+    // So both are asked, most specific first — and carrying a treatment marker
+    // is what "more specific" means.
+    const num = cell(row, 'num');
+    const set = /^([a-z]{2,4})/i.exec(code)?.[1] || cell(row, 'set');
+    const fromNum = num && /^[a-z]{2,4}$/i.test(set) ? `${set}-${num}` : '';
+    const marked = (c) => /\d[a-z*]$/i.test(c);
+    const candidates = [code, fromNum]
+      .filter(Boolean)
+      .sort((a, b) => Number(marked(b)) - Number(marked(a)));
+
+    let hit = { card: null, ambiguous: false };
+    for (const candidate of candidates) {
+      const found = resolveCard(candidate, name);
+      if (found.card && !found.ambiguous) { hit = found; break; }
+      if (found.card && !hit.card) hit = found;
+    }
+    if (hit.ambiguous) tally.ambiguous++;
+    tally.take(hit.card, name || code || `row ${i + 1}`, { q, f, w });
+  }
+  return tally.read ? tally : null;
+}
+
+/**
+ * A plain list: `3x Ashe, Frost Archer (OGN 012) [1 foil]` from our own text
+ * export, or the bare `3 Ashe, Frost Archer` a mass-entry box takes. The
+ * wishlist section of our export carries no counts, so a `Wishlist` heading
+ * turns the countless lines below it from noise into wishlist entries.
+ */
+function importList(text) {
+  const tally = makeTally();
+  let wishSection = false;
+
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || /^-+$/.test(line)) continue;
+    // Our own export's summary line opens with a count but describes no card.
+    if (line.includes('·')) continue;
+    if (/^wishlist$/i.test(line)) { wishSection = true; continue; }
+
+    const counted = /^(\d+)\s*[x×]?\s+(.*\S)$/.exec(line);
+    if (!counted && !wishSection) continue;
+
+    const body = counted ? counted[2] : line;
+    const total = counted ? readCount(counted[1]) : 0;
+    // `(OGN 012)` or `(OGN-012)` — the printed identifier our text export adds.
+    const at = /\(([A-Za-z]{2,4})[\s-]([A-Za-z0-9*]{1,5})\)\s*(?:\[|$)/.exec(body);
+    const foils = /\[(\d+)\s*foils?\]/i.exec(body);
+    const f = Math.min(total, foils ? readCount(foils[1]) : 0);
+    // Only the trailing identifier and foil note come off. A bracket earlier in
+    // the line belongs to the name — `Fury Rune (Alternate Art)` is the whole
+    // reason the name can settle what the collector number can't.
+    const name = body
+      .replace(/\s*\[[^\]]*\]\s*$/, '')
+      .replace(/\s*\([A-Za-z]{2,4}[\s-][A-Za-z0-9*]{1,5}\)\s*$/, '')
+      .trim();
+    if (!at && !name) continue;
+
+    const { card, ambiguous } = resolveCard(at ? `${at[1]}-${at[2]}` : '', name);
+    if (ambiguous) tally.ambiguous++;
+    tally.take(card, name || line, counted ? { q: total - f, f } : { w: true });
+  }
+  return tally.read ? tally : null;
+}
+
+/** Our own backup: card ids straight through, with no resolving to do. */
+function importBackup(text) {
+  const data = JSON.parse(text);
+  const incoming = data.collection ?? data;
+  if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return null;
+
+  const { clean, skipped } = sanitize(incoming);
+  const tally = makeTally();
+  tally.entries = clean;
+  tally.read = Object.keys(clean).length + skipped;
+  for (let i = 0; i < skipped && i < 400; i++) tally.unresolved.push('a card id this catalogue has no row for');
+  return tally.read ? tally : null;
+}
+
+/**
+ * Works out what a file is and reads it. JSON is tried first because it's ours
+ * and unambiguous; everything else falls through the table reader to the list
+ * reader, which is the loosest thing that can still be believed.
+ */
+function readImport(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  if (trimmed.startsWith('{')) {
+    try {
+      const tally = importBackup(trimmed);
+      if (tally) return { kind: 'backup', tally };
+    } catch { /* not our JSON after all — let the table reader have it */ }
+  }
+
+  const table = importTable(readCSV(text));
+  if (table) return { kind: 'table', tally: table };
+
+  const list = importList(text);
+  if (list) return { kind: 'list', tally: list };
+
+  return null;
+}
+
+/* ---------------- import review ---------------- */
+
+const importModal = el('import-modal');
+/** The parsed file, waiting on a choice of how to apply it. */
+let pendingImport = null;
+
+const IMPORT_KINDS = {
+  backup: 'a Riftbound Collection backup',
+  table: 'a collection CSV',
+  list: 'a card list',
+};
+
+/** Totals of a collection-shaped map, for the before-and-after lines. */
+function tallyTotals(entries) {
+  let cards = 0, copies = 0, foils = 0, wishes = 0;
+  for (const e of Object.values(entries)) {
+    if (e.q || e.f) cards++;
+    copies += e.q + e.f;
+    foils += e.f;
+    if (e.w) wishes++;
+  }
+  return { cards, copies, foils, wishes };
+}
+
+/** What the collection becomes under each of the two choices. */
+function mergedWith(entries, mode) {
+  if (mode === 'replace') return { ...entries };
+  const out = {};
+  for (const [id, e] of Object.entries(collection)) out[id] = { ...e };
+  for (const [id, e] of Object.entries(entries)) {
+    const cur = out[id] || { q: 0, f: 0, w: false };
+    out[id] = {
+      q: Math.min(99, cur.q + e.q),
+      f: Math.min(99, cur.f + e.f),
+      w: cur.w || e.w,
+    };
+  }
+  return out;
+}
+
+/**
+ * The review step, and the reason Import stopped being a one-line confirm: a
+ * file from another tracker never lands cleanly, and which rows didn't make it
+ * is the thing worth knowing *before* the collection changes.
+ */
+function renderImportReview() {
+  const { kind, tally } = pendingImport;
+  const found = tallyTotals(tally.entries);
+  const now = tallyTotals(collection);
+  const after = tallyTotals(mergedWith(tally.entries, 'add'));
+  const missed = tally.unresolved.length;
+
+  el('import-sub').textContent =
+    `Read ${IMPORT_KINDS[kind]} — ${tally.read} row${tally.read === 1 ? '' : 's'}.`;
+
+  const samples = [...new Set(tally.unresolved)].slice(0, 6);
+  const notes = [];
+  if (tally.ambiguous) {
+    notes.push(
+      `<p class="import-note"><b>${tally.ambiguous}</b> row${
+        tally.ambiguous === 1 ? '' : 's'
+      } matched more than one card — several Organized Play printings share a
+       collector number, and reprints share a name. Each went to the
+       earliest-printed one.</p>`
+    );
+  }
+  if (missed) {
+    notes.push(
+      `<p class="import-note"><b>${missed}</b> row${
+        missed === 1 ? '' : 's'
+      } matched no card here and will be left out${
+        samples.length ? `: ${samples.map(esc).join(', ')}${missed > samples.length ? '…' : ''}` : '.'
+      }</p>`
+    );
+  }
+
+  el('import-body').innerHTML = `
+    <div class="import-figs">
+      <div class="import-fig"><b>${found.cards}</b><span>cards in the file</span></div>
+      <div class="import-fig"><b>${found.copies}</b><span>copies${
+        found.foils ? `, ${found.foils} foil` : ''
+      }</span></div>
+      ${found.wishes ? `<div class="import-fig"><b>${found.wishes}</b><span>wishlisted</span></div>` : ''}
+    </div>
+    ${notes.join('')}
+    <ul class="import-choices">
+      <li><b>Add</b> stacks the counts on top of what you already have —
+        ${now.copies} copies become <b>${after.copies}</b>. Importing the same
+        file twice counts it twice.</li>
+      <li><b>Replace</b> clears your ${now.cards} card${
+        now.cards === 1 ? '' : 's'
+      } first, leaving only what's in the file. This is what restoring a backup
+        wants.</li>
+    </ul>`;
+}
+
+function closeImport() {
+  pendingImport = null;
+  if (importModal.open) importModal.close();
+}
+
+function applyImport(mode) {
+  if (!pendingImport) return;
+  const next = mergedWith(pendingImport.tally.entries, mode);
+  const before = tallyTotals(collection);
+
+  // The same pruning setEntry does, so an entry adding up to nothing isn't kept.
+  collection = {};
+  for (const [id, e] of Object.entries(next)) {
+    if (e.q > 0 || e.f > 0 || e.w) collection[id] = { q: e.q, f: e.f, w: !!e.w };
+  }
+
+  const after = tallyTotals(collection);
+  closeImport();
+  save();
+  render();
+  toast(
+    mode === 'replace'
+      ? `Collection replaced — ${after.cards} cards, ${after.copies} copies`
+      : `Added ${after.copies - before.copies} copies across ${after.cards} cards`
+  );
+}
+
 el('btn-import').addEventListener('click', () => el('file-import').click());
 
 el('file-import').addEventListener('change', async (e) => {
   const file = e.target.files?.[0];
+  e.target.value = '';
   if (!file) return;
-  try {
-    const data = JSON.parse(await file.text());
-    const incoming = data.collection ?? data;
-    if (!incoming || typeof incoming !== 'object') throw new Error('bad shape');
 
-    const { clean, skipped } = sanitize(incoming);
-
-    const count = Object.keys(clean).length;
-    if (!confirm(`Import ${count} card entries? This replaces your current collection.`)) return;
-
-    collection = clean;
-    save();
-    render();
-    toast(`Imported ${count} entries${skipped ? ` (${skipped} unknown ids skipped)` : ''}`);
-  } catch {
-    toast('Could not read that file');
-  } finally {
-    e.target.value = '';
+  // Someone else's binder is read-only all the way down, and an import is the
+  // largest write there is.
+  if (viewing) {
+    toast('Leave this collection before importing');
+    return;
   }
+
+  let parsed = null;
+  try {
+    parsed = readImport(await file.text());
+  } catch {
+    parsed = null;
+  }
+
+  if (!parsed) {
+    toast('Nothing readable in that file — try a JSON backup, a collection CSV or a card list');
+    return;
+  }
+
+  pendingImport = parsed;
+  renderImportReview();
+  setMenu(false);
+  importModal.showModal();
 });
+
+el('import-add').addEventListener('click', () => applyImport('add'));
+el('import-replace').addEventListener('click', () => applyImport('replace'));
+el('import-cancel').addEventListener('click', closeImport);
+el('import-close').addEventListener('click', closeImport);
+// Escape and the backdrop close the dialog on their own; drop the file with it.
+importModal.addEventListener('close', () => { pendingImport = null; });
 
 /* ---------------- deck generator ---------------- */
 
