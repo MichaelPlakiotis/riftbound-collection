@@ -40,6 +40,7 @@
     <div class="topbar-actions">
       <button id="btn-pack" class="btn btn-pack" type="button">Open a pack</button>
       <button id="btn-deck" class="btn btn-primary" type="button">Build deck</button>
+      <button id="btn-decks" class="btn" type="button" title="Decks you've saved">Decks</button>
       <!-- Export opens a format menu: hover on a mouse, tap on a phone. The menu
            lives inside the wrapper so it can hang off the button on wide screens
            and unfold in the flow inside the burger panel on narrow ones. -->
@@ -128,6 +129,7 @@
     </div>
     <div class="deck-head-actions">
       <select id="deck-legend" class="sel" aria-label="Build around a specific Legend"></select>
+      <button id="deck-save" class="btn" type="button">Save deck</button>
       <button id="deck-copy" class="btn" type="button">Copy list</button>
       <button id="deck-close" class="btn btn-quiet" type="button" aria-label="Close">✕</button>
     </div>
@@ -269,6 +271,22 @@
     <button id="import-replace" class="btn" type="button">Replace my collection</button>
     <button id="import-add" class="btn btn-primary" type="button">Add to my collection</button>
   </footer>
+</dialog>
+
+<!-- Decks somebody keeps, as opposed to the one the generator just proposed.
+     Each unfolds into the decklist text itself — that text is the format, and
+     seeing it is how you know what Copy will put on the clipboard. -->
+<dialog id="decks-modal" class="decks-modal">
+  <header class="decks-head">
+    <div>
+      <h2>Decks</h2>
+      <p class="decks-sub" id="decks-sub"></p>
+    </div>
+    <button id="decks-add" class="btn" type="button">Paste a list</button>
+    <button id="decks-close" class="icon-btn" type="button" aria-label="Close">✕</button>
+  </header>
+
+  <div class="decks-body" id="decks-body"></div>
 </dialog>
 
 <div id="toast" class="toast" hidden></div>

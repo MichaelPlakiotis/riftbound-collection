@@ -211,3 +211,81 @@ left join public.collections c on c.user_id = p.user_id
 where p.is_public;
 
 grant select on public.public_collectors to authenticated;
+
+-- ===========================================================================
+-- Decks
+-- ===========================================================================
+--
+-- A row per deck, which is the one place this schema departs from the shape of
+-- the collection above. A collection is a couple of thousand entries that are
+-- always read and written together, so it lives as one JSON document. A deck is
+-- the opposite: it has a name, its own history, and gets edited on its own, and
+-- folding every deck into one blob would mean rewriting all of them to rename
+-- one — and losing the per-deck timestamp that lets two devices work out which
+-- copy of *this* deck is newer.
+--
+-- The id is chosen by the browser rather than by Postgres. A deck exists locally
+-- before an account does, and it keeps the same identity when it arrives here,
+-- so syncing is a comparison of ids rather than a mapping between two of them.
+-- gen_random_uuid() stays as the default for anything inserted by hand.
+
+create table if not exists public.decks (
+  id         uuid        primary key default gen_random_uuid(),
+  user_id    uuid        not null references auth.users (id) on delete cascade,
+  name       text        not null,
+  -- `{ legend: [{ id, n }], champion: […], main: […], battlefields: […],
+  --    runes: […], sideboard: […] }` — card ids and counts, exactly as the
+  -- browser holds them. The decklist text is rendered from this, never stored,
+  -- so a deck picks up a corrected card name the next time it's shown.
+  sections   jsonb       not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint decks_name_length check (char_length(name) between 1 and 80)
+);
+
+-- The only query the app makes: this user's decks, newest first.
+create index if not exists decks_user_updated_idx
+  on public.decks (user_id, updated_at desc);
+
+alter table public.decks enable row level security;
+
+drop policy if exists "read own decks"   on public.decks;
+drop policy if exists "insert own decks" on public.decks;
+drop policy if exists "update own decks" on public.decks;
+drop policy if exists "delete own decks" on public.decks;
+
+-- Decks are private to their owner. Nothing here reads another account's decks,
+-- and unlike collections there is no second, wider SELECT policy: publishing a
+-- profile makes a *collection* browsable and says nothing about decks. Adding
+-- deck sharing later means an is_public column and one more permissive policy,
+-- on the same pattern as "read public collections" above.
+create policy "read own decks"
+  on public.decks for select
+  using (auth.uid() = user_id);
+
+-- `with check` on insert is what stops a signed-in caller filing a deck under
+-- somebody else's user_id.
+create policy "insert own decks"
+  on public.decks for insert
+  with check (auth.uid() = user_id);
+
+create policy "update own decks"
+  on public.decks for update
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create policy "delete own decks"
+  on public.decks for delete
+  using (auth.uid() = user_id);
+
+-- Deliberately *without* the touch_updated_at trigger the other tables carry.
+-- Collections keep one row per user, so the server can own the timestamp and the
+-- client just reads it back. Decks resolve per deck: the browser compares the
+-- copy it holds against the copy here and keeps the newer one, which only works
+-- if the timestamp means "when this deck was last edited". A trigger would reset
+-- every deck to now() the moment it was pushed, and a device that had been
+-- offline for a week would win every comparison on arrival.
+--
+-- A client can therefore write any updated_at it likes — but only on its own
+-- rows, which the policies above already guarantee. The worst a wrong clock
+-- costs is one of your own devices' edits losing to another's.

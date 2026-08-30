@@ -83,6 +83,10 @@ No server, no build step, no install — opening `index.html` locally works too.
   the cards one at a time. See below.
 - **Build deck** — generates a legal, playable deck from cards you own. See
   below.
+- **Decks** — decklists you keep, in the `1 Teemo, Swift Scout [OGN-263]` format
+  the deck sites trade in. Paste one in, save the generator's, and see how much
+  of each you own. Synced to your account when signed in. See
+  [Saved decks](#saved-decks).
 - **Export / Import** — `localStorage` is per-browser and gets wiped if you clear
   site data, so export occasionally. Export opens a format menu (hover or click,
   and it unfolds inline inside the burger panel on a phone):
@@ -511,6 +515,114 @@ Verified by extracting Rift Atlas's own `parseDecklist` from their site bundle
 and running generated decks through it: 10/10 accepted, zero errors, zero
 warnings, and every card name resolving.
 
+## Saved decks
+
+**Decks** in the header keeps the lists you build or paste, in the format every
+Riftbound deck site trades in — sections, counts, and the printing in brackets:
+
+```
+Legend:
+1 Teemo, Swift Scout [OGN-263]
+
+Champion:
+1 Teemo, Strategist [OGN-121]
+
+MainDeck:
+1 Bone Skewer [UNL-139]
+3 Consult the Past [OGN-083]
+…
+
+Battlefields:
+1 Bandle Tree [OGN-278]
+
+Runes:
+7 Chaos Rune [OGN-166]
+5 Mind Rune [OGN-089]
+
+Sideboard:
+2 Gust [OGN-169]
+```
+
+Paste one in and it's saved; unfold a deck and you get that text back; **Copy**
+puts it on the clipboard. A deck built by the generator gets there through
+**Save deck** in its dialog, split the way the format wants — the Chosen Champion
+in its own one-card section, the rest of its copies in `MainDeck`, so the two
+sections come to exactly 40.
+
+What's stored is card ids and counts, not the text. The text is rendered on
+demand, which is what lets a deck pick up a corrected card name from the next
+`sync-cards.mjs` run, be counted against your collection, and be priced. Each
+saved deck shows its Legend, the counts the rules care about, its market value,
+and **how much of it you actually own** — the point of keeping decks in a
+collection tracker rather than in a text file.
+
+### Reading a pasted list
+
+The parser is deliberately forgiving, because the lists people paste come from
+everywhere:
+
+- A header is any line ending in a colon, matched with case and spacing thrown
+  away — `MainDeck:`, `Main Deck:` and `maindeck:` are one thing. `Sideboard`,
+  `Side`, `Rune Deck` and the rest have aliases.
+- Entries are `<count> <name>`, with `3x Name` and a trailing `[OGN-094]` both
+  fine. Cards before any header are read as the main deck; a bare list of cards
+  is a deck, and refusing one for not saying so would be pedantry.
+- `#` and `//` lines are comments. A heading naming no section we know is
+  reported rather than silently swallowed.
+
+Cards resolve through the **same index the collection importer uses**, so a
+decklist and a collection CSV recognise a card by identical rules: the bracketed
+code decides when there is one, the name settles it when there isn't, and
+`Teemo, Swift Scout` finds Riftcodex's `Teemo - Swift Scout` because the
+comparison throws punctuation away. Anything unresolved is counted in the toast
+rather than quietly dropping the deck.
+
+Checked by pasting the list above, storing it, and rendering it back: **the text
+comes out byte-identical**, the sections resolve to 40 main / 12 runes / 3
+battlefields with nothing unmatched, and a generated deck survives the same
+round trip.
+
+### Copy list is still name-only
+
+The generator's **Copy list** button is unchanged and still writes names without
+codes, for the reason in [Copy list](#copy-list): Rift Atlas's importer *accepts*
+a bracketed code but treats an unresolvable one as a hard error, where an
+unresolvable name is merely looked up. Their catalogue and ours disagree about
+enough printings that names are the safer wire format. Saved decks are ours, read
+back by us, so they carry the code and are exact.
+
+### Where they live
+
+Locally under `riftbound-decks-v1`, and in Postgres when signed in. Unlike the
+collection, decks are **a row each**:
+
+| | Collection | Decks |
+| --- | --- | --- |
+| Shape | one JSON document per user | one row per deck |
+| Why | a couple of thousand entries always read and written together | each has a name, its own history, and gets edited on its own |
+| Conflicts | newer `updated_at` replaces the local copy wholesale | resolved per deck, so renaming one can't roll back another |
+
+Two details follow from that. The deck **id is a UUID the browser picks**, not
+one Postgres assigns — a deck exists before an account does and keeps the same
+identity when it arrives, so syncing compares ids rather than mapping between
+two sets of them. And the `decks` table deliberately has **no `updated_at`
+trigger**, unlike the other two: the timestamp has to mean "when this deck was
+last edited" for the per-deck comparison to work, and a trigger would stamp
+`now()` on every push, letting a device that had been offline for a week win
+every comparison on arrival.
+
+Deleting a deck leaves a **tombstone** — the id and the time. Without one, a
+deck you deleted here is just a deck the cloud has and this device doesn't,
+which reads as "adopt it", and every sync would hand back everything you ever
+threw away. Tombstones are cleared once a sync has carried the delete out, and
+expire after 90 days regardless.
+
+Decks are **private to their owner**. Publishing a profile makes your
+*collection* browsable and says nothing about your decks; there is no second
+read policy on the table. Sharing them later would be an `is_public` column and
+one more permissive policy, on the pattern `read public collections` already
+sets.
+
 ## Refreshing card data
 
 Card data is baked into `data/cards.js` at sync time rather than fetched at
@@ -562,13 +674,13 @@ The base printing always sorts first and keeps the clean ID.
 ```
 index.html          markup
 styles.css          styles
-app.js              filtering, sorting, stats, prices, persistence, export/import, card detail, deck + pack UI, visiting mode
-deck.js             deck generator — rules engine, synergy scoring and search, no DOM dependency
+app.js              filtering, sorting, stats, prices, persistence, export/import, card detail, deck + pack UI, saved decks, visiting mode
+deck.js             deck generator — rules engine, synergy scoring and search — plus the decklist format's reader and writer, no DOM dependency
 pack.js             booster pack model — slot table and draws, no DOM dependency
-cloud.js            optional — accounts, cloud sync, and the session everything else reads
+cloud.js            optional — accounts, collection and deck sync, and the session everything else reads
 social.js           optional — public profiles, the collector browser, ?u= links
 supabase-config.js  project URL and browser-safe key (placeholders = local-only)
-supabase-schema.sql tables, RLS policies and the browse view — run once in the SQL editor
+supabase-schema.sql collections, profiles and decks — tables, RLS policies and the browse view; run once in the SQL editor
 vendor/supabase.js  vendored client, injected on demand
 sync-cards.mjs      pulls cards from the Riftcodex API
 sync-prices.mjs     pulls market prices from TCGplayer
@@ -663,9 +775,10 @@ local-first behaviour.
 1. Create a project at [supabase.com](https://supabase.com) (the free tier is
    plenty — this uses one small table).
 2. **SQL Editor → New query**, paste `supabase-schema.sql`, Run. That creates the
-   `collections` and `profiles` tables, their Row Level Security policies and the
-   `public_collectors` view. Every statement guards itself, so re-run the whole
-   file after pulling — that's how an existing project picks up public profiles.
+   `collections`, `profiles` and `decks` tables, their Row Level Security
+   policies and the `public_collectors` view. Every statement guards itself, so
+   re-run the whole file after pulling — that's how an existing project picks up
+   public profiles, and how it picks up saved decks.
 3. **Authentication → Sign In / Providers → Email**: leave Email enabled and turn
    **Confirm email** *off*. Supabase's built-in mailer is rate-limited to a
    handful of messages an hour, which turns a few friends signing up into a

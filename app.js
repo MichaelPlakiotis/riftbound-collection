@@ -1435,7 +1435,8 @@ document.addEventListener('keydown', (e) => {
   // both it and the panel it's sitting in.
   if (
     e.key === 'Escape' && menuOpen() && !exportOpen() &&
-    !deckModal.open && !packModal.open && !cardModal.open && !importModal.open
+    !deckModal.open && !packModal.open && !cardModal.open && !importModal.open &&
+    !decksModal.open
   ) {
     setMenu(false);
   }
@@ -2434,10 +2435,12 @@ function renderDeck() {
       <p class="deck-empty-hint">Mark the cards you own with the <b>+</b> buttons first — the
       generator only ever uses copies you actually have.</p>`;
     el('deck-copy').disabled = true;
+    el('deck-save').disabled = true;
     return;
   }
 
   el('deck-copy').disabled = false;
+  el('deck-save').disabled = false;
   el('deck-sub').innerHTML =
     `${esc(deck.legendName)} · ${deck.identity.map((d) => `<span class="dot" ` +
       `style="background:var(--f-${esc(d)})"></span>${esc(titleCase(d))}`).join(' ')}`;
@@ -2567,6 +2570,414 @@ deckModal.addEventListener('click', (e) => {
   if (e.target === deckModal) return deckModal.close();
   const name = e.target.closest('[data-card]');
   if (name) openCardDetail(name.dataset.card);
+});
+
+/* ---------------- saved decks ---------------- */
+
+/**
+ * A deck someone keeps, as opposed to one the generator just proposed. Stored
+ * as sections of card ids and counts rather than as the text you see, so a deck
+ * can be counted against the collection, priced, and rewritten whenever the
+ * catalogue learns a better name — and shown as text whenever it's asked for.
+ *
+ * The record: `{ id, name, updatedAt, sections: { legend: [{ id, n }], … } }`.
+ * The id is a UUID chosen here rather than by Postgres, so a deck keeps one
+ * identity on every device and syncing is a comparison rather than a mapping.
+ */
+const DECKS_KEY = 'riftbound-decks-v1';
+
+/**
+ * `{ decks: { [id]: deck }, deleted: { [id]: iso } }`. The tombstones are what
+ * make a delete travel: without them the next sync finds a deck the cloud still
+ * has and this device doesn't, and helpfully hands it back.
+ */
+let deckStore = loadDecks();
+
+/** A tombstone older than this has long since reached every device. */
+const TOMBSTONE_DAYS = 90;
+
+function loadDecks() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DECKS_KEY) || 'null');
+    const cutoff = new Date(Date.now() - TOMBSTONE_DAYS * 864e5).toISOString();
+    const deleted = {};
+    for (const [id, at] of Object.entries(raw?.deleted || {})) {
+      // Kept forever they'd outgrow the decks themselves, and a delete that
+      // hasn't caught up in three months never will.
+      if (typeof at === 'string' && at > cutoff) deleted[id] = at;
+    }
+    return { decks: raw?.decks || {}, deleted };
+  } catch {
+    return { decks: {}, deleted: {} };
+  }
+}
+
+let deckSaveTimer;
+function saveDecks({ fromCloud = false } = {}) {
+  clearTimeout(deckSaveTimer);
+  deckSaveTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(DECKS_KEY, JSON.stringify(deckStore));
+    } catch {
+      toast('Could not save — storage may be full');
+    }
+  }, 150);
+  if (!fromCloud) window.RiftboundCloud?.onDecksChange?.();
+}
+
+/**
+ * Coerces anything claiming to be a deck into the shape above, dropping card ids
+ * this catalogue has no row for. Shared by the paste box and by cloud sync, on
+ * the same reasoning as the collection's sanitize: neither source is ours.
+ */
+function sanitizeDeck(d) {
+  if (!d || typeof d !== 'object' || typeof d.id !== 'string' || !d.id) return null;
+  const sections = {};
+  let entries = 0;
+  for (const key of window.RiftboundDeck.SECTIONS) {
+    sections[key] = [];
+    for (const e of Array.isArray(d.sections?.[key]) ? d.sections[key] : []) {
+      const n = Math.max(1, Math.min(99, parseInt(e?.n, 10) || 0));
+      if (!KNOWN_IDS.has(e?.id)) continue;
+      sections[key].push({ id: e.id, n });
+      entries++;
+    }
+  }
+  if (!entries) return null;
+  return {
+    id: d.id,
+    name: String(d.name || 'Untitled deck').slice(0, 80).trim() || 'Untitled deck',
+    updatedAt: typeof d.updatedAt === 'string' ? d.updatedAt : new Date().toISOString(),
+    sections,
+  };
+}
+
+const sanitizeDecks = (list) => {
+  const out = {};
+  for (const d of Array.isArray(list) ? list : Object.values(list || {})) {
+    const clean = sanitizeDeck(d);
+    if (clean) out[clean.id] = clean;
+  }
+  return out;
+};
+
+/** Newest first — the deck you last touched is the one you want to see. */
+const decksByRecency = () =>
+  Object.values(deckStore.decks).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+
+const newDeckId = () =>
+  crypto.randomUUID?.() ||
+  // Older Safari has getRandomValues but not randomUUID; the id only has to be
+  // unique and shaped like a UUID, since Postgres stores it as one.
+  '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) =>
+    (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)
+  );
+
+const cardById = new Map(CARDS.map((c) => [c.id, c]));
+const deckText = (deck) => window.RiftboundDeck.formatDecklist(deck.sections, (id) => cardById.get(id));
+
+/**
+ * A pasted list, resolved against the catalogue. The code in brackets decides
+ * when there is one, and the name settles it when there isn't — both through the
+ * importer's index, so a decklist and a collection file recognise a card by
+ * exactly the same rules.
+ */
+function resolveDecklist(text) {
+  const parsed = window.RiftboundDeck.parseDecklist(text);
+  const sections = {};
+  const unresolved = [];
+  let cards = 0;
+
+  for (const key of window.RiftboundDeck.SECTIONS) {
+    sections[key] = [];
+    for (const entry of parsed.sections[key]) {
+      const { card } = resolveCard(entry.code, entry.name);
+      if (!card) {
+        if (unresolved.length < 40) unresolved.push(entry.name || entry.code);
+        continue;
+      }
+      // The same card twice in one section is one stack, however it was written.
+      const seen = sections[key].find((e) => e.id === card.id);
+      if (seen) seen.n = Math.min(99, seen.n + entry.count);
+      else sections[key].push({ id: card.id, n: entry.count });
+      cards += entry.count;
+    }
+  }
+
+  return { sections, unresolved, cards, entries: parsed.entries, strays: parsed.strays };
+}
+
+/**
+ * What a saved deck adds up to, and how much of it you own. The counts are the
+ * ones the rules care about: the Chosen Champion is part of the 40, runes and
+ * battlefields have their own limits, and a sideboard is outside all of it.
+ */
+function deckSummary(deck) {
+  const total = (key) => (deck.sections[key] || []).reduce((a, e) => a + e.n, 0);
+  const counts = {
+    main: total('champion') + total('main'),
+    runes: total('runes'),
+    battlefields: total('battlefields'),
+    sideboard: total('sideboard'),
+  };
+
+  // Owned is measured per card across the whole list, capped at what the deck
+  // asks for — owning six of a three-of doesn't make you more than complete.
+  const wanted = new Map();
+  for (const key of window.RiftboundDeck.SECTIONS) {
+    for (const e of deck.sections[key] || []) wanted.set(e.id, (wanted.get(e.id) || 0) + e.n);
+  }
+  let need = 0;
+  let have = 0;
+  for (const [id, n] of wanted) {
+    need += n;
+    have += Math.min(n, copiesOf(id));
+  }
+
+  const legendId = deck.sections.legend?.[0]?.id;
+  const D = window.RiftboundDeck;
+  const issues = [];
+  if (counts.main !== D.MAIN_DECK) issues.push(`${counts.main} main deck cards, not ${D.MAIN_DECK}`);
+  if (counts.runes !== D.RUNE_DECK) issues.push(`${counts.runes} runes, not ${D.RUNE_DECK}`);
+  if (counts.battlefields !== D.BATTLEFIELDS)
+    issues.push(`${counts.battlefields} battlefields, not ${D.BATTLEFIELDS}`);
+  if (!legendId) issues.push('no Legend');
+
+  return {
+    counts,
+    need,
+    have,
+    issues,
+    legend: legendId ? cardById.get(legendId) : null,
+    value: PRICE_DATA ? [...wanted].reduce((a, [id, n]) => a + n * (priceOf(id) || 0), 0) : null,
+  };
+}
+
+/* ---------------- saved deck UI ---------------- */
+
+const decksModal = el('decks-modal');
+/** Which saved deck has its list unfolded, if any. */
+let openDeckId = null;
+let pasteOpen = false;
+/**
+ * The half-typed paste, kept outside the DOM. Every unfold, rename and delete
+ * redraws the whole list, and a decklist someone is midway through pasting must
+ * not be one of the things that redraw throws away.
+ */
+let pasteDraft = { text: '', name: '' };
+
+function renderDecks() {
+  const decks = decksByRecency();
+  el('decks-sub').textContent = decks.length
+    ? `${decks.length} saved deck${decks.length === 1 ? '' : 's'}, kept in this browser${
+        window.RiftboundCloud ? ' and on your account when signed in' : ''
+      }.`
+    : 'Nothing saved yet. Paste a list, or build one and save it.';
+
+  const paste = `
+    <form class="deck-paste" id="deck-paste" ${pasteOpen ? '' : 'hidden'}>
+      <label class="deck-paste-label" for="deck-paste-text">Paste a decklist</label>
+      <textarea id="deck-paste-text" rows="9" spellcheck="false"
+                placeholder="Legend:&#10;1 Teemo, Swift Scout [OGN-263]&#10;&#10;MainDeck:&#10;3 Sprite Call [OGN-094]&#10;…">${esc(pasteDraft.text)}</textarea>
+      <div class="deck-paste-row">
+        <input id="deck-paste-name" type="text" maxlength="80" placeholder="Deck name"
+               value="${esc(pasteDraft.name)}">
+        <button class="btn btn-primary" type="submit">Save deck</button>
+        <button class="btn btn-quiet" type="button" data-act="paste-cancel">Cancel</button>
+      </div>
+      <p class="deck-paste-note" id="deck-paste-note"></p>
+    </form>`;
+
+  el('decks-body').innerHTML =
+    paste + (decks.length ? decks.map(savedDeckHTML).join('') : '');
+}
+
+function savedDeckHTML(deck) {
+  const s = deckSummary(deck);
+  const open = deck.id === openDeckId;
+  const complete = s.have >= s.need && s.need > 0;
+
+  const meta = [
+    `${s.counts.main}/${window.RiftboundDeck.MAIN_DECK} main`,
+    `${s.counts.runes}/${window.RiftboundDeck.RUNE_DECK} runes`,
+    `${s.counts.battlefields}/${window.RiftboundDeck.BATTLEFIELDS} battlefields`,
+    s.counts.sideboard ? `${s.counts.sideboard} sideboard` : '',
+    s.value ? money(s.value) : '',
+  ].filter(Boolean);
+
+  return `
+    <article class="saved-deck ${open ? 'is-open' : ''}" data-deck="${esc(deck.id)}">
+      <div class="saved-deck-head">
+        <button class="saved-deck-name" type="button" data-act="toggle"
+                aria-expanded="${open}">
+          <span class="saved-deck-caret" aria-hidden="true">${open ? '▾' : '▸'}</span>
+          ${esc(deck.name)}
+        </button>
+        <div class="saved-deck-tools">
+          <button class="btn btn-quiet" type="button" data-act="rename">Rename</button>
+          <button class="btn btn-quiet" type="button" data-act="copy">Copy</button>
+          <button class="btn btn-quiet" type="button" data-act="delete">Delete</button>
+        </div>
+      </div>
+      <p class="saved-deck-meta">
+        ${s.legend ? `<b>${esc(window.RiftboundDeck.cardName(s.legend))}</b> · ` : ''}
+        ${meta.map(esc).join(' · ')}
+        <span class="saved-deck-owned ${complete ? 'ok' : ''}"
+              title="Copies of this deck you own">you own ${s.have}/${s.need}</span>
+      </p>
+      ${
+        s.issues.length
+          ? `<p class="saved-deck-issues">${s.issues.map(esc).join(' · ')}</p>`
+          : ''
+      }
+      ${open ? `<pre class="saved-deck-list">${esc(deckText(deck))}</pre>` : ''}
+    </article>`;
+}
+
+/** Writes a deck and re-renders. Used by every path that creates or edits one. */
+function putDeck(deck) {
+  deckStore.decks[deck.id] = { ...deck, updatedAt: new Date().toISOString() };
+  delete deckStore.deleted[deck.id];
+  saveDecks();
+  renderDecks();
+}
+
+function removeDeck(id) {
+  delete deckStore.decks[id];
+  deckStore.deleted[id] = new Date().toISOString();
+  if (openDeckId === id) openDeckId = null;
+  saveDecks();
+  renderDecks();
+}
+
+el('btn-decks').addEventListener('click', () => {
+  setMenu(false);
+  pasteOpen = Object.keys(deckStore.decks).length === 0;
+  renderDecks();
+  decksModal.showModal();
+});
+
+el('decks-close').addEventListener('click', () => decksModal.close());
+
+el('decks-add').addEventListener('click', () => {
+  // Already open: focus it rather than redraw, which would only lose the draft.
+  if (!pasteOpen) {
+    pasteOpen = true;
+    renderDecks();
+  }
+  el('deck-paste-text').focus();
+});
+
+el('decks-body').addEventListener('input', (e) => {
+  if (e.target.id === 'deck-paste-text') pasteDraft.text = e.target.value;
+  else if (e.target.id === 'deck-paste-name') pasteDraft.name = e.target.value;
+});
+
+el('decks-body').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-act]');
+  if (!btn) return;
+  const act = btn.dataset.act;
+
+  if (act === 'paste-cancel') {
+    pasteOpen = false;
+    pasteDraft = { text: '', name: '' };
+    renderDecks();
+    return;
+  }
+
+  const id = btn.closest('[data-deck]')?.dataset.deck;
+  const deck = id && deckStore.decks[id];
+  if (!deck) return;
+
+  if (act === 'toggle') {
+    openDeckId = openDeckId === id ? null : id;
+    renderDecks();
+  } else if (act === 'copy') {
+    copyDeckText(deck);
+  } else if (act === 'rename') {
+    const name = prompt('Deck name', deck.name);
+    if (name?.trim()) putDeck({ ...deck, name: name.trim().slice(0, 80) });
+  } else if (act === 'delete') {
+    if (confirm(`Delete “${deck.name}”? This can't be undone.`)) removeDeck(id);
+  }
+});
+
+el('decks-body').addEventListener('submit', (e) => {
+  if (e.target.id !== 'deck-paste') return;
+  e.preventDefault();
+
+  const text = el('deck-paste-text').value;
+  const resolved = resolveDecklist(text);
+  const note = el('deck-paste-note');
+
+  if (!resolved.cards) {
+    note.textContent = 'No cards recognised in that list.';
+    return;
+  }
+
+  const name = el('deck-paste-name').value.trim() ||
+    // A deck names itself after its Legend when nobody names it.
+    (resolved.sections.legend[0] &&
+      window.RiftboundDeck.cardName(cardById.get(resolved.sections.legend[0].id))) ||
+    'Untitled deck';
+
+  pasteOpen = false;
+  pasteDraft = { text: '', name: '' };
+  putDeck({ id: newDeckId(), name, sections: resolved.sections });
+  toast(
+    resolved.unresolved.length
+      ? `Saved “${name}” — ${resolved.unresolved.length} line${
+          resolved.unresolved.length === 1 ? '' : 's'
+        } matched no card`
+      : `Saved “${name}” — ${resolved.cards} cards`
+  );
+});
+
+/** Clipboard where it works, a download where it doesn't. Shared with Copy list. */
+async function copyDeckText(deck) {
+  const text = deckText(deck);
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('Decklist copied');
+  } catch {
+    const blob = new Blob([text], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${deck.name.replace(/[^\w -]+/g, '') || 'riftbound-deck'}.txt`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('Decklist downloaded');
+  }
+}
+
+/**
+ * The generator's proposal, kept. The Chosen Champion is split out the way the
+ * format wants it — one copy in its own section, the rest in the main deck — so
+ * saving and then reading the text back gives the same 40 cards.
+ */
+function sectionsFromGenerated(deck) {
+  const pickId = (p) => p.entry.card.id;
+  const champion = deck.main.find((p) => p.chosen);
+  return {
+    legend: deck.legendEntry ? [{ id: deck.legendEntry.card.id, n: 1 }] : [],
+    champion: champion ? [{ id: pickId(champion), n: 1 }] : [],
+    main: deck.main
+      .map((p) => ({ id: pickId(p), n: p.chosen ? p.count - 1 : p.count }))
+      .filter((e) => e.n > 0),
+    battlefields: deck.battlefields.map((p) => ({ id: pickId(p), n: p.count })),
+    runes: deck.runes.map((p) => ({ id: pickId(p), n: p.count })),
+    sideboard: [],
+  };
+}
+
+el('deck-save').addEventListener('click', () => {
+  if (!currentDeck?.ok) return;
+  const suggested = window.RiftboundDeck.cardName(currentDeck.legendEntry.card);
+  const name = prompt('Save this deck as', suggested);
+  if (!name?.trim()) return;
+  putDeck({ id: newDeckId(), name: name.trim().slice(0, 80), sections: sectionsFromGenerated(currentDeck) });
+  toast(`Saved “${name.trim()}” to your decks`);
 });
 
 /* ---------------- pack simulator ---------------- */
@@ -3056,6 +3467,19 @@ window.RiftboundApp = {
     render();
   },
   sanitize: (incoming) => sanitize(incoming).clean,
+
+  /** `{ decks, deleted }` — the tombstones matter to sync, so they travel too. */
+  getDecks: () => deckStore,
+  /**
+   * Replaces the saved decks with the result of a sync. Never echoes back, and
+   * redraws the list only when it's on screen — this fires on every tab focus.
+   */
+  applyDecks(next) {
+    deckStore = { decks: sanitizeDecks(next?.decks), deleted: next?.deleted || {} };
+    saveDecks({ fromCloud: true });
+    if (decksModal.open) renderDecks();
+  },
+
   toast,
   setViewing,
   /** The handle currently being visited, or null. */

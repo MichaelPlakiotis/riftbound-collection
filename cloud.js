@@ -133,6 +133,145 @@
   let pushTimer;
   let lastRefresh = 0;
 
+  /* ---------------- decks ---------------- */
+
+  /*
+   * Decks sync per deck rather than as one document, because that's how they're
+   * stored: a row each, with its own name and its own updated_at. So there is no
+   * "the cloud is newer" for decks as a whole — every deck is compared with its
+   * own counterpart and the later edit wins, which means one device renaming a
+   * deck can't roll back another device's new one.
+   *
+   * Deletions travel on tombstones. Without them a deck deleted here is simply a
+   * deck the cloud has and this device doesn't, which reads as "adopt it" — the
+   * sync would hand back everything you ever threw away.
+   */
+
+  const rowToDeck = (r) => ({
+    id: r.id,
+    name: r.name,
+    updatedAt: r.updated_at,
+    sections: r.sections,
+  });
+
+  const deckToRow = (d, userId) => ({
+    id: d.id,
+    user_id: userId,
+    name: d.name,
+    sections: d.sections,
+    updated_at: d.updatedAt,
+  });
+
+  async function pullDecks(userId) {
+    const c = await client();
+    const { data, error } = await c
+      .from('decks')
+      .select('id, name, sections, updated_at')
+      .eq('user_id', userId);
+    if (error) throw error;
+    return data || [];
+  }
+
+  /**
+   * Writes every local deck and clears every tombstone that has been acted on.
+   * Upserting a deck that hasn't changed is a no-op worth its simplicity: nobody
+   * has hundreds of decks, and the alternative is tracking a dirty flag per deck
+   * for a saving of one small request.
+   * @returns the tombstoned ids that were deleted server-side.
+   */
+  async function pushDecks(store, userId) {
+    const c = await client();
+    const rows = Object.values(store.decks).map((d) => deckToRow(d, userId));
+    if (rows.length) {
+      const { error } = await c.from('decks').upsert(rows, { onConflict: 'id' });
+      if (error) throw error;
+    }
+
+    const gone = Object.keys(store.deleted);
+    if (gone.length) {
+      // RLS scopes this to the caller's own rows, so an id that isn't theirs
+      // simply matches nothing rather than deleting somebody else's deck.
+      const { error } = await c.from('decks').delete().in('id', gone);
+      if (error) throw error;
+    }
+    return gone;
+  }
+
+  /** Drops the tombstones a push has now carried out, leaving any added since. */
+  function forgetTombstones(sent) {
+    if (!sent.length) return;
+    const now = App.getDecks();
+    const deleted = { ...now.deleted };
+    for (const id of sent) delete deleted[id];
+    App.applyDecks({ decks: now.decks, deleted });
+  }
+
+  async function reconcileDecks() {
+    if (!user) return;
+    const local = App.getDecks();
+    let remote;
+    try {
+      remote = await pullDecks(user.id);
+    } catch {
+      return; // the collection's own status line already says we're offline
+    }
+
+    const byId = new Map(remote.map((r) => [r.id, r]));
+    const decks = {};
+    const deleted = { ...local.deleted };
+
+    for (const id of new Set([...Object.keys(local.decks), ...byId.keys()])) {
+      const mine = local.decks[id];
+      const theirs = byId.get(id);
+      const tomb = deleted[id];
+
+      // A deck deleted here stays deleted unless the cloud's copy was edited
+      // *after* the delete — which means another device revived it on purpose.
+      if (tomb && (!theirs || tomb >= theirs.updated_at)) continue;
+      if (tomb) delete deleted[id];
+
+      if (!theirs) decks[id] = mine;
+      else if (!mine) decks[id] = rowToDeck(theirs);
+      else decks[id] = mine.updatedAt > theirs.updated_at ? mine : rowToDeck(theirs);
+    }
+
+    App.applyDecks({ decks, deleted });
+
+    try {
+      forgetTombstones(await pushDecks({ decks, deleted }, user.id));
+    } catch {
+      /* the next change or the next tab focus tries again */
+    }
+  }
+
+  /**
+   * Both halves of an account, in the order that reads best: the collection
+   * first, because its toast is the one that says what signing in did, and the
+   * decks after. `reconcile` returns down several branches, so the deck pass is
+   * chained here rather than tacked onto the end of it.
+   */
+  async function syncAll(opts) {
+    await reconcile(opts);
+    await reconcileDecks();
+  }
+
+  let deckTimer;
+  /** app.js calls this after every local deck write. */
+  function onDecksChange() {
+    if (!user) return;
+    setStatus('saving');
+    clearTimeout(deckTimer);
+    deckTimer = setTimeout(async () => {
+      try {
+        forgetTombstones(await pushDecks(App.getDecks(), user.id));
+        setStatus('synced');
+      } catch {
+        setStatus('offline');
+      }
+    }, PUSH_DELAY);
+  }
+
+
   /* ---------------- who's signed in, for anyone who asks ---------------- */
 
   /**
@@ -239,14 +378,14 @@
     }, PUSH_DELAY);
   }
 
-  window.RiftboundCloud = { onLocalChange, client, onUser, ensureAuth };
+  window.RiftboundCloud = { onLocalChange, onDecksChange, client, onUser, ensureAuth };
 
   // Coming back to the tab is the natural moment to notice another device's edits.
   document.addEventListener('visibilitychange', () => {
     if (document.hidden || !user) return;
     if (Date.now() - lastRefresh < REFRESH_EVERY) return;
     lastRefresh = Date.now();
-    reconcile();
+    syncAll();
   });
 
   /* ---------------- UI ---------------- */
@@ -441,13 +580,13 @@
       announceUser();
       if (!user) return;
       // SIGNED_IN also fires on token refresh; only resync when the user changed.
-      if (changed) reconcile({ announce: event === 'SIGNED_IN' });
+      if (changed) syncAll({ announce: event === 'SIGNED_IN' });
     });
     const { data } = await c.auth.getSession();
     if (data.session?.user && !user) {
       user = data.session.user;
       paintButton();
-      reconcile();
+      syncAll();
     }
     announceUser();
   }

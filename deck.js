@@ -967,5 +967,145 @@
     ].join('\n\n');
   }
 
-  global.RiftboundDeck = { buildDeck, toText, cardName, MAIN_DECK, RUNE_DECK, BATTLEFIELDS, MAX_COPIES };
+  /* ---------------- saved decklists ---------------- */
+
+  /**
+   * A saved deck is stored as sections of card ids and counts, and shown as the
+   * text below — the shape every Riftbound deck site trades in:
+   *
+   *     Legend:
+   *     1 Teemo, Swift Scout [OGN-263]
+   *
+   *     MainDeck:
+   *     3 Sprite Call [OGN-094]
+   *
+   * The parser and the writer here are the whole of the format. They stay in
+   * this file because they're pure text work with no DOM in sight, which is what
+   * lets them be exercised straight from Node; resolving a name or a code to one
+   * of *our* cards is app.js's job, since that's where the catalogue index is.
+   */
+
+  /**
+   * Section headers by the name this app files them under. A header is a line
+   * ending in a colon, compared with case and spacing thrown away, which is the
+   * grammar Rift Atlas reads — `MainDeck:` and `Main Deck:` are one thing, and
+   * `Main Deck (39)` is not a header at all.
+   */
+  const SECTION_ALIASES = {
+    legend: ['legend', 'legends'],
+    champion: ['champion', 'champions', 'chosenchampion'],
+    main: ['maindeck', 'main', 'deck', 'mainboard'],
+    battlefields: ['battlefields', 'battlefield'],
+    runes: ['runes', 'rune', 'runedeck'],
+    sideboard: ['sideboard', 'side', 'sb'],
+  };
+
+  const SECTIONS = Object.keys(SECTION_ALIASES);
+
+  const SECTION_TITLES = {
+    legend: 'Legend',
+    champion: 'Champion',
+    main: 'MainDeck',
+    battlefields: 'Battlefields',
+    runes: 'Runes',
+    sideboard: 'Sideboard',
+  };
+
+  /** Which section a line opens, or null when it isn't a header. */
+  function sectionOf(line) {
+    if (!line.endsWith(':')) return null;
+    const key = line.slice(0, -1).toLowerCase().replace(/\s+/g, '');
+    return SECTIONS.find((s) => SECTION_ALIASES[s].includes(key)) || null;
+  }
+
+  const emptySections = () => Object.fromEntries(SECTIONS.map((s) => [s, []]));
+
+  /**
+   * Text to structure, and no further: each entry comes back as the count, the
+   * name and the bracketed code exactly as written. Nothing is resolved here, so
+   * a list quoting a card this catalogue has never heard of parses fine and is
+   * reported as unresolved later rather than throwing the whole file out.
+   *
+   * Lines before any header land in MainDeck — a bare list of cards is a deck,
+   * and refusing to read one because it forgot to say so would be pedantry.
+   */
+  function parseDecklist(text) {
+    const sections = emptySections();
+    const strays = [];
+    let current = 'main';
+    let entries = 0;
+
+    for (const raw of String(text || '').split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+
+      const header = sectionOf(line);
+      if (header) { current = header; continue; }
+      // A colon-ended line that names no section we know is a heading all the
+      // same; treating it as a card would put junk in whichever section preceded.
+      if (line.endsWith(':')) { strays.push(line.slice(0, -1)); continue; }
+
+      const m = /^(\d+)\s*[x×]?\s+(.*\S)$/.exec(line);
+      if (!m) continue;
+
+      const rest = m[2];
+      const coded = /^(.*\S)\s*\[([^\]]+)\]\s*$/.exec(rest);
+      sections[current].push({
+        count: Math.max(1, Math.min(99, parseInt(m[1], 10) || 0)),
+        name: (coded ? coded[1] : rest).trim(),
+        code: coded ? coded[2].trim() : '',
+      });
+      entries++;
+    }
+
+    return { sections, entries, strays };
+  }
+
+  /**
+   * Structure back to text. `cardOf` turns a stored id into a card; an id it
+   * can't answer for is dropped rather than written as a blank line, since a
+   * decklist naming nothing is worse than a decklist one card short.
+   *
+   * Names are written the way the deck sites spell them — `Teemo, Swift Scout`
+   * rather than Riftcodex's `Teemo - Swift Scout` — and the code in brackets
+   * says exactly which printing, which is what makes the text round-trip.
+   * Entries are alphabetical inside a section, so two saves of the same deck
+   * produce the same file.
+   */
+  function formatDecklist(sections, cardOf) {
+    const out = [];
+
+    for (const key of SECTIONS) {
+      const rows = (sections?.[key] || [])
+        .map((e) => {
+          const card = cardOf(e.id);
+          return card ? { n: e.n, name: atlasName(cardName(card)), code: printedCode(card) } : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      if (!rows.length) continue;
+      out.push(
+        `${SECTION_TITLES[key]}:\n${rows.map((r) => `${r.n} ${r.name} [${r.code}]`).join('\n')}`
+      );
+    }
+
+    return out.join('\n\n');
+  }
+
+  /**
+   * The printing in brackets: set code, dash, padded number, and the treatment
+   * marker when there is one. Same identifier the collection exports write, so a
+   * decklist and a collection file name a card the same way.
+   */
+  function printedCode(card) {
+    const num = String(card.collector_number).padStart(3, '0') + (card.variant || '');
+    return `${card.set_id}-${num}`;
+  }
+
+  global.RiftboundDeck = {
+    buildDeck, toText, cardName, atlasName,
+    parseDecklist, formatDecklist, printedCode, SECTIONS, SECTION_TITLES,
+    MAIN_DECK, RUNE_DECK, BATTLEFIELDS, MAX_COPIES,
+  };
 })(typeof window !== 'undefined' ? window : globalThis);
