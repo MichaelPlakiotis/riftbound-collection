@@ -307,6 +307,15 @@ const SORTS = [
     priced: true,
     cmp: byNumeric((c) => priceOf(c.id), 1),
   },
+  {
+    id: 'qty-desc',
+    label: 'Sort: Quantity high → low',
+    // Every physical copy, foils included — the number on the tile's badge. The
+    // reverse isn't offered: it would open on a thousand cards you own none of.
+    // The grid re-sorts on the next filter change rather than while you tap
+    // +/−, so a stack you're counting out doesn't slide away under the cursor.
+    cmp: byNumeric((c) => copiesOf(c.id), -1),
+  },
   { id: 'cost-asc', label: 'Sort: Cost low → high', cmp: byNumeric(energyOf, 1) },
   { id: 'cost-desc', label: 'Sort: Cost high → low', cmp: byNumeric(energyOf, -1) },
   {
@@ -330,6 +339,19 @@ const esc = (s) =>
   String(s).replace(/[&<>"']/g, (ch) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch])
   );
+
+/**
+ * "A rune of any domain" — the game's own rainbow rune — as a CSS paint. Kept
+ * beside the single-domain form below so the rules text, the card dots and the
+ * domain filter can't drift into three different sets of rune colours.
+ */
+const RAINBOW_RUNE =
+  'conic-gradient(var(--f-fury),var(--f-order),var(--f-body),' +
+  'var(--f-calm),var(--f-mind),var(--f-chaos),var(--f-fury))';
+
+/** The colour of one domain's rune. An unknown domain falls back to colourless. */
+const runePaint = (domain) =>
+  domain === 'rainbow' ? RAINBOW_RUNE : `var(--f-${esc(domain)}, var(--f-colorless))`;
 
 /**
  * Market price plus the move since the previous sync. The stack value only shows
@@ -390,8 +412,7 @@ function cardHTML(c) {
   const num = String(c.collector_number).padStart(3, '0') + (c.variant ? c.variant : '');
   const dots = c.domains
     .map(
-      (d) =>
-        `<span class="dot" style="background:var(--f-${esc(d)}, #7d8896)" title="${esc(d)}"></span>`
+      (d) => `<span class="dot" style="background:${runePaint(d)}" title="${esc(d)}"></span>`
     )
     .join('');
 
@@ -481,6 +502,7 @@ function render() {
   renderViewBar();
   renderStats();
   updateFilterBadge();
+  paintDomainSwatch();
 }
 
 /** Refresh one tile in place so the grid doesn't jump while you tap +/−. */
@@ -952,10 +974,7 @@ function symbolHTML(token) {
     // Rainbow means "a rune of any domain", so it gets every domain colour
     // rather than one of them.
     const rainbow = rune[1] === 'rainbow';
-    const style = rainbow
-      ? 'background:conic-gradient(var(--f-fury),var(--f-order),var(--f-body),' +
-        'var(--f-calm),var(--f-mind),var(--f-chaos),var(--f-fury))'
-      : `background:var(--f-${esc(rune[1])}, var(--f-colorless))`;
+    const style = `background:${runePaint(rune[1])}`;
     return `<span class="sym sym-rune" style="${style}" title="${
       rainbow ? 'Rune of any domain' : `${esc(titleCase(rune[1]))} rune`
     }"></span>`;
@@ -1292,15 +1311,42 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-function bindSelect(id, key, label, values, labelFn = (v) => v) {
+/**
+ * `optionStyle` inline-styles each value's `<option>`, for a menu whose entries
+ * carry more than their wording — the domains name runes, and a rune is a
+ * colour before it's a word. Only `color` survives inside an `<option>`, and
+ * Safari drops even that, so it stays decoration — paintDomainSwatch() draws
+ * the chip every browser shows.
+ */
+function bindSelect(id, key, label, values, labelFn = (v) => v, optionStyle = null) {
   const sel = el(id);
   sel.innerHTML =
     `<option value="">${label}</option>` +
-    values.map((v) => `<option value="${esc(v)}">${esc(labelFn(v))}</option>`).join('');
+    values
+      .map(
+        (v) =>
+          `<option value="${esc(v)}"${
+            optionStyle ? ` style="${optionStyle(v)}"` : ''
+          }>${esc(labelFn(v))}</option>`
+      )
+      .join('');
   sel.addEventListener('change', () => {
     state[key] = sel.value;
     render();
   });
+}
+
+/**
+ * Colours the chip beside the domain filter with the rune you've picked, or
+ * with the rainbow rune — the game's "any domain" — while the filter is off.
+ * Driven from render() rather than from the select's own handler, so Reset and
+ * anything else that puts the filter back get it for free.
+ */
+function paintDomainSwatch() {
+  el('domain-wrap').style.setProperty(
+    '--swatch',
+    state.domain ? runePaint(state.domain) : RAINBOW_RUNE
+  );
 }
 
 /**
@@ -1492,6 +1538,16 @@ const cardNo = (card) => String(card.collector_number).padStart(3, '0');
 const dotggId = (card) => `${card.set_id}-${cardNo(card)}`;
 
 /**
+ * The same printing as the RiftCore family of trackers files it: set code, dash,
+ * padded number, then the treatment marker in upper case — `OGN-007A` for the
+ * alternate art, `OGN-299*` for a signature. Their readers take exactly three
+ * uppercase alphanumerics for the number and at most one letter or star after
+ * it, so `PR`'s two-letter set code is the one thing here they can't parse; its
+ * 13 promos come through as unrecognised rows rather than as the wrong card.
+ */
+const riftcoreId = (card) => `${card.set_id}-${cardNo(card)}${(card.variant || '').toUpperCase()}`;
+
+/**
  * The name without the treatment suffix we carry and other catalogues don't:
  * riftbound.gg lists one `Ahri - Alluring`, not a separate `(Alternate Art)`
  * printing, so the bare name is what a name lookup has to be given. Worth 27
@@ -1572,6 +1628,57 @@ const EXPORT_FORMATS = {
         .join('\r\n')}\r\n`,
   },
 
+  /**
+   * The shape the rest of the ecosystem sniffs for. OpenRift — which reads four
+   * trackers' exports and writes all four back out — recognises a collection by
+   * its first line, and `RIFTCORE COLLECTION EXPORT` is the one that gets a file
+   * in; from there it converts on to Piltover Archive and RiftMana. Our own CSV
+   * matches none of those signatures, which is why it bounced off every importer
+   * it was fed to.
+   *
+   * The difference that matters is how a foil is spelled. Ours emits one row per
+   * printing with a `Foil` column beside a single quantity, so a reader that
+   * doesn't know that column sees two rows for one card — three normals and two
+   * foils either becomes five normals or loses the foils entirely. This format
+   * carries the two counts in two columns, `Standard Qty` and `Foil Qty`, which
+   * is how the collection is stored here in the first place: `q` and `f`.
+   *
+   * Rare, Epic and Showcase cards have no non-foil printing, so their readers
+   * take the standard count of one as foil too. Both counts still land on the
+   * card as copies, so a total is never lost — but it's why a plain copy of an
+   * Epic arrives foil. Wishlist-only rows are left out; there's no quantity in
+   * them to import.
+   */
+  riftcore: {
+    ext: 'csv',
+    slug: '-riftcore',
+    mime: 'text/csv',
+    build: (rows) => {
+      const head = [
+        'Card ID', 'Card Name', 'Set', 'Card Number', 'Type', 'Rarity', 'Domain',
+        'Standard Qty', 'Foil Qty',
+      ];
+      // Two lines of preamble before the header, the way RiftCore writes them:
+      // the first is the signature the importers match on, and a second opening
+      // `Exported from` is a line their row loop already knows to skip.
+      const out = [
+        'RIFTCORE COLLECTION EXPORT',
+        `Exported from Riftbound Collection on ${new Date().toISOString().slice(0, 10)}`,
+        head.join(','),
+      ];
+      for (const r of rows) {
+        if (r.q === 0 && r.f === 0) continue;
+        out.push(
+          [
+            riftcoreId(r.card), plainName(r.card), setNameOf(r.card.set_id), cardNo(r.card),
+            r.card.type, r.card.rarity, r.card.domains.join(' / '), r.q, r.f,
+          ].map(csvCell).join(',')
+        );
+      }
+      return `${out.join('\r\n')}\r\n`;
+    },
+  },
+
   txt: {
     ext: 'txt',
     mime: 'text/plain',
@@ -1629,6 +1736,7 @@ const EXPORT_LABELS = {
   json: 'JSON',
   csv: 'CSV',
   rbgg: 'a riftbound.gg file',
+  riftcore: 'a collection-tracker file',
   txt: 'a text list',
   tcg: 'a TCGplayer list',
 };
@@ -1750,7 +1858,7 @@ const CURVE_LABELS = { 2: '≤2', 3: '3', 4: '4', 5: '5', 6: '6', 7: '7+' };
 
 function domainDots(card) {
   return card.domains
-    .map((d) => `<span class="dot" style="background:var(--f-${esc(d)}, #7d8896)" title="${esc(d)}"></span>`)
+    .map((d) => `<span class="dot" style="background:${runePaint(d)}" title="${esc(d)}"></span>`)
     .join('');
 }
 
@@ -2426,7 +2534,9 @@ const titleCase = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 bindSelect('f-set', 'set', 'All sets', META.sets.map((s) => s.id),
   (id) => META.sets.find((s) => s.id === id).name);
-bindSelect('f-domain', 'domain', 'All domains', META.domains, titleCase);
+bindSelect('f-domain', 'domain', 'All domains', META.domains, titleCase, (d) =>
+  `color:var(--f-${esc(d)}, var(--f-colorless))`
+);
 bindSelect('f-rarity', 'rarity', 'All rarities', META.rarities, titleCase);
 bindSelect('f-type', 'type', 'All types', META.types);
 

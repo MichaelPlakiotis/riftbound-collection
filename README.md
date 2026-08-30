@@ -25,10 +25,23 @@ No server, no build step, no install — opening `index.html` locally works too.
   in Vendetta) match either one. Promo sets are hidden by default and excluded
   from the overall completion figure; picking a promo set explicitly still shows
   it.
+- **Rune colours on the domain filter** — the domains *are* the runes, and a rune
+  is a colour before it's a word, so the filter carries one. A chip beside the
+  dropdown shows the domain you've picked in the same colour the rules text and
+  the card dots draw its rune; with the filter off it shows the game's rainbow
+  rune, "a rune of any domain". The names inside the open dropdown are tinted to
+  match where the browser allows it — only `color` survives inside an `<option>`,
+  and Safari drops even that, so the chip outside is what always works.
 - **Sort** — the last dropdown in the filter bar reorders the grid: price high to
-  low or low to high, energy cost either way, by card type (Legend, Unit, Spell,
-  Gear, Rune, Battlefield — the order the deck panel groups them in, with each
-  type's own curve inside it), or name. Cards with nothing to sort on — a card
+  low or low to high, **quantity high to low**, energy cost either way, by card
+  type (Legend, Unit, Spell, Gear, Rune, Battlefield — the order the deck panel
+  groups them in, with each type's own curve inside it), or name. Quantity counts
+  every physical copy, foils included — the number on the tile's badge — so it
+  opens on the stacks you have most of, which is the pile you trade out of. It
+  has no low-to-high twin on purpose: reversed it would open on a thousand cards
+  you own none of. The grid re-sorts on the next filter change rather than while
+  you tap `+`/`−`, so a stack you're counting out doesn't slide away under the
+  cursor. Cards with nothing to sort on — a card
   with no sales data, a Rune with no energy cost — always sink to the bottom
   rather than flipping to the top when you reverse the direction. Default is the
   order the sets were printed in, which also breaks ties everywhere else. The
@@ -77,8 +90,9 @@ No server, no build step, no install — opening `index.html` locally works too.
   | Format | What it's for |
   | --- | --- |
   | **JSON** | Full backup — the only format Import reads back |
-  | **CSV** | Spreadsheets and most collection trackers. One row per *printing*, so a card you hold in both finishes gets a normal row and a foil row: card id, set code, printed number, quantity, foil, wishlist flag, rarity, type, domains, unit/total price in the currency currently selected, and the name. Each row is priced as the printing it is. UTF-8 BOM so Excel doesn't mangle card names |
+  | **CSV** | Spreadsheets. One row per *printing*, so a card you hold in both finishes gets a normal row and a foil row: card id, set code, printed number, quantity, foil, wishlist flag, rarity, type, domains, unit/total price in the currency currently selected, and the name. Each row is priced as the printing it is. UTF-8 BOM so Excel doesn't mangle card names. It is the only export with prices in it, and the only one no other tracker recognises — see below |
   | **riftbound.gg** | Four columns shaped for [riftbound.gg](https://riftbound.gg/collection/)'s collection importer, one row per printing. See below |
+  | **Other trackers** | The RiftCore collection shape, which is what the rest of the ecosystem sniffs for — one row per card with `Standard Qty` and `Foil Qty` in their own columns. This is the file to hand [OpenRift](https://openrift.app), and through it Piltover Archive and RiftMana. See [Exporting to other trackers](#exporting-to-other-trackers) |
   | **Text** | Readable list grouped by set — `3x Ashe, Frost Archer (OGN 012)`, with `[1 foil]` appended when some are — and a wishlist section at the end |
   | **TCGplayer mass entry** | `3 Ashe, Frost Archer` lines for bulk-add boxes. Owned copies only, foils included in the count; a wishlist card has no quantity to enter |
 
@@ -113,6 +127,85 @@ general promos their catalogue files under different codes entirely. They show u
 in their "Needs attention" list, where you can point each at the right card.
 Before this shape, the same file imported 1013 cards, dropped 75 rows without
 saying so, and put 232 in the unresolved pile.
+
+### Exporting to other trackers
+
+Every other Riftbound tracker refused our CSV, and it wasn't the columns — it was
+the **first line**. Importers in this ecosystem sniff the format before they read
+a row, and each one is keyed to a signature it already knows:
+
+| Format | Recognised by |
+| --- | --- |
+| OpenRift | an `Art Variant` column |
+| Piltover Archive | a `Variant Number` column |
+| RiftCore | the literal first line `RIFTCORE COLLECTION EXPORT` |
+| RiftMana | a `Normal Qty` column |
+
+Our spreadsheet CSV carries none of those, so it isn't "a CSV they mis-parse" —
+it's a file they decline to open at all. Verified by running
+[OpenRift](https://openrift.app)'s own `detectImportFormat` over each of our
+exports: **the CSV, the riftbound.gg file, the text list and the TCGplayer list
+are all unrecognised.** That is the whole of the bug.
+
+The **Other trackers** export writes the RiftCore shape, which is the one worth
+targeting for two reasons. It's the widest door — OpenRift reads all four formats
+and writes all four back out, so this one file also reaches Piltover Archive and
+RiftMana. And it's the only one whose foil model is already ours:
+
+```
+RIFTCORE COLLECTION EXPORT
+Exported from Riftbound Collection on 2026-08-30
+Card ID,Card Name,Set,Card Number,Type,Rarity,Domain,Standard Qty,Foil Qty
+OGN-001,Blazing Scorcher,Origins,001,Unit,common,fury,2,1
+OGN-007A,Fury Rune,Origins,007,Rune,showcase,fury,9,0
+OGN-299*,Kai'Sa - Daughter of the Void,Origins,299,Legend,showcase,fury / mind,1,0
+```
+
+#### Why the foils needed their own format
+
+Two normals and one foil is **three cards**, and the collection has always stored
+it that way — `q` and `f`, two counts on one entry. Our CSV flattens that into
+two rows sharing a name, told apart only by a `Foil` column. A reader that
+doesn't know that column sees the two rows and has no good option: fold them and
+you get five copies, keep the first and the foils vanish. `Standard Qty` and
+`Foil Qty` say it in one row, in the same shape it's stored in, with nothing to
+infer.
+
+One thing does change on the way in. Rare, Epic and Showcase cards have no
+non-foil printing in Riftbound, so these readers take the standard count on one
+as foil too — a plain copy of an Epic arrives foil. Both counts still land on the
+card, so a total is never lost.
+
+#### What survives
+
+Measured by transpiling OpenRift's own `import-parsers.ts` and running an export
+of the whole catalogue at 2 normal + 1 foil through it:
+
+- **1398 of 1411 cards** parse, carrying **4194 of 4233 copies**.
+- The 13 that don't are the whole of the `PR` set. Their card-id pattern takes
+  exactly three uppercase letters for a set code and `PR` has two, so there is no
+  spelling of those promos their reader accepts. They arrive as named
+  unrecognised rows rather than as the wrong card, which is the better failure.
+- Alternate arts and signatures keep their printing: `OGN-007A` reads back as
+  alt-art and `OGN-299*` as overnumbered, rather than collapsing onto the plain
+  card the way the riftbound.gg export has to.
+- 69 codes are shared by more than one of our cards — 153 cards, mostly `OPP`,
+  where Riftcodex numbers several Organized Play waves alike, plus runes numbered
+  `R01` colliding with card 1. Set code and number is all this format has, so
+  those land together on one printing. The copies are right; which card they're
+  filed under may not be.
+
+#### The collector numbers were wrong
+
+Chasing this turned up a bug in the sync. `variantOf` pulled a printing's
+treatment marker off the end of the id with `/^\d+(.+)$/`, which needs at least
+one character after the digits — so on a plain `ogn-009-298` it backtracked,
+read the number as `00` and the marker as `9`. 1151 of 1411 cards carried a
+phantom marker, and the grid printed their collector numbers with the last digit
+doubled: `0099` for card 9. The pattern now insists the marker be a letter or a
+star (`/^[a-z]*\d+([a-z*]+)$/i`), which leaves all 198 real markers — `a`, `b`,
+`c`, `*` — untouched and clears the rest. `data/cards.js` was re-derived in place
+rather than re-synced, since the id it reads is already in the file.
 
 ## Pack simulator
 
@@ -611,8 +704,12 @@ Everything downstream follows the split:
 
 - **Collection worth** values each stack at its own price — two normals at $0.09
   plus three foils at $0.22 is $0.84, not five of anything.
-- **CSV and riftbound.gg exports** emit one row per printing, which is how other
-  trackers file them and what riftbound.gg's `foil` column expects.
+- **CSV and riftbound.gg exports** emit one row per printing, which is what
+  riftbound.gg's `foil` column expects.
+- **The other-trackers export** keeps the two counts as two columns, `Standard
+  Qty` and `Foil Qty` — the same shape `q` and `f` already are, and the one every
+  other Riftbound importer reads. See
+  [Exporting to other trackers](#exporting-to-other-trackers).
 - **Text export** folds them into one line per card — `5x Chaos Rune (UNL R05)
   [3 foil]` — since that list is meant to read like a binder.
 - **TCGplayer mass entry** uses the combined count: that box has no syntax for a

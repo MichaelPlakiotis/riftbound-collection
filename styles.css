@@ -271,6 +271,25 @@ button, input, select { font: inherit; color: inherit; }
    badge — the accent is what tells you a non-default order is in effect. */
 .sel-sort.is-set { border-color: var(--accent-dim); color: var(--accent); }
 
+/* The domain filter names the six runes, so it wears their colours. An <option>
+   can hold nothing but text, so the swatch is parked over the select's own left
+   padding instead. It matches the rune symbol the rules text draws, one size
+   down for the filter bar. */
+.sel-wrap { position: relative; display: inline-flex; }
+.sel-swatch {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  margin-top: -6px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, .25);
+  background: var(--swatch, var(--f-colorless));
+  pointer-events: none;
+}
+.sel-domain { padding-left: 28px; }
+
 .segmented {
   display: flex;
   border: 1px solid var(--line);
@@ -1619,6 +1638,10 @@ main { padding: 16px 20px 60px; }
 
   .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .filters .sel { width: 100%; padding: 9px 10px; }
+  /* The domain select is a grid cell one level down now, so the wrapper is what
+     has to fill the column — and the taller control moves the swatch with it. */
+  .filters .sel-wrap { width: 100%; }
+  .filters .sel-domain { padding-left: 28px; }
   /* Odd one out of the four filter selects, and its labels are the longest. */
   .sel-sort { grid-column: 1 / -1; }
   .segmented { grid-column: 1 / -1; }

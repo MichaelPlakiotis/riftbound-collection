@@ -109,12 +109,15 @@ function dedupe(rows) {
 }
 
 /**
- * `ogn-214a-298` -> `a`, `unl-229*-219` -> `*`. Codes whose number segment isn't
- * numeric at all (`ven-r01`, `ven-sp2-006`) have no variant marker.
+ * `ogn-214a-298` -> `a`, `unl-229*-219` -> `*`, `opp-r01b` -> `b`. A marker is
+ * always a letter or a star sitting *after* the digits, so the pattern has to
+ * insist on one: `\d+(.+)` reads plain `ogn-009-298` as the number `00` plus a
+ * variant `9`, and the grid then prints its collector number as `0099`. Codes
+ * whose number segment carries no marker (`ven-r01`, `ven-sp2-006`) have none.
  */
 function variantOf(riftboundId) {
   const seg = String(riftboundId || '').split('~')[0].split('-')[1] || '';
-  const m = /^\d+(.+)$/.exec(seg);
+  const m = /^[a-z]*\d+([a-z*]+)$/i.exec(seg);
   return m ? m[1].toLowerCase() : '';
 }
 
