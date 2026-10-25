@@ -40,7 +40,7 @@
    * what you own instead of building an illegal deck.
    */
   const TREATMENT =
-    /\s*\((?:alternate art|signature|overnumbered|starter|metal|gg ez|launch exclusive|ultimate)\)\s*$/i;
+    /\s*\((?:(?:heartsteel )?(?:signature|overnumbered)|alternate art|starter|metal|gg ez|launch exclusive|ultimate|k\/da special art card)\)\s*$/i;
 
   const cardName = (c) => c.name.replace(TREATMENT, '');
 

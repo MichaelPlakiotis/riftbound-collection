@@ -64,7 +64,7 @@
    * uses — kept local so either file can be dropped in on its own.
    */
   const TREATMENT =
-    /\s*\((?:alternate art|signature|overnumbered|starter|metal|gg ez|launch exclusive|ultimate)\)\s*$/i;
+    /\s*\((?:(?:heartsteel )?(?:signature|overnumbered)|alternate art|starter|metal|gg ez|launch exclusive|ultimate|k\/da special art card)\)\s*$/i;
 
   const isTreated = (c) => TREATMENT.test(c.name);
 

@@ -226,24 +226,32 @@ async function fetchTcgProducts() {
 
 /**
  * Rebuilds the Riftbound ID a card would carry if Riftcodex knew about it.
- * Verified against the 1049 products we already hold: every one reproduces its
- * real ID exactly. Two number shapes are trustworthy and nothing else is:
+ * Verified against the products we already hold: every set-numbered one
+ * reproduces its real ID exactly, alternate arts and signatures included (148 of
+ * 148). The only misses were bundle reprints filed under the bundle's own set
+ * code (RWB for what Riftcodex calls PR), which the set guard in supplement()
+ * keeps out. These shapes are trustworthy and nothing else is:
  *
- *   "131/219" -> unl-131-219     ordinary collector number over set size
- *   "R05"     -> unl-r05         runes, which Vendetta already numbers this way
+ *   "131/219"  -> unl-131-219    ordinary collector number over set size
+ *   "084a/166" -> sfd-084a-166   alternate art keeps its letter
+ *   "229*\/219" -> unl-229*-219   signature keeps its star
+ *   "SP3/006"  -> ven-sp3-006    showcase, numbered in its own run
+ *   "R05"      -> unl-r05        runes, which Vendetta already numbers this way
  *
- * Tokens ("T02 // T04"), signature variants (a starred collector number) and
- * alternate arts ("084a/166") get no ID — their real shape isn't predictable
- * from here, and a wrong guess is worse than an absent card, because
- * collections key off the ID.
+ * Tokens ("T02 // T04") get no ID — their real shape isn't predictable from
+ * here, and a wrong guess is worse than an absent card, because collections key
+ * off the ID.
  */
 function predictId(product) {
   const code = (product.setCode || '').toLowerCase();
   const num = String(product.customAttributes?.number || '');
   if (!code) return null;
 
-  const numbered = /^(\d+)\/(\d+)$/.exec(num);
-  if (numbered) return `${code}-${numbered[1].padStart(3, '0')}-${numbered[2]}`;
+  const numbered = /^(\d+)([a-z*]?)\/(\d+)$/i.exec(num);
+  if (numbered) return `${code}-${numbered[1].padStart(3, '0')}${numbered[2].toLowerCase()}-${numbered[3]}`;
+
+  const showcase = /^SP(\d+)\/(\d+)$/i.exec(num);
+  if (showcase) return `${code}-sp${showcase[1]}-${showcase[2].padStart(3, '0')}`;
 
   const rune = /^R(\d+)([a-z]?)$/i.exec(num);
   if (rune) return `${code}-r${rune[1].padStart(2, '0')}${(rune[2] || '').toLowerCase()}`;
@@ -301,8 +309,7 @@ function synthesise(product, id) {
     .split(';')
     .map((d) => d.trim().toLowerCase())
     .filter((d) => d && d !== 'none');
-  const num = /^(\d+)/.exec(String(attr.number || ''));
-  const runeNum = /^R(\d+)/i.exec(String(attr.number || ''));
+  const num = /^(?:SP|R)?(\d+)/i.exec(String(attr.number || ''));
   const description = plainText(attr.description);
   const rarity = String(attr.rarityDbName || '').toLowerCase();
 
@@ -310,10 +317,8 @@ function synthesise(product, id) {
     id,
     name: product.productName,
     set_id: product.setCode,
-    collector_number: Number(num?.[1] ?? runeNum?.[1] ?? 0),
-    // Only the rune IDs carry a variant letter; numbered ones are accepted only
-    // in their plain "131/219" form.
-    variant: /-r\d+([a-z])$/.exec(id)?.[1] || '',
+    collector_number: Number(num?.[1] ?? 0),
+    variant: variantOf(id),
     rarity: rarity === 'none' ? '' : rarity,
     type,
     supertype,
@@ -346,12 +351,13 @@ function synthesise(product, id) {
  *  2. it must not already belong to a real card
  *  3. two products must not want the same ID
  *
- * On the current catalogue that admits 91 of 232 unmatched products, including
- * every missing rune. The rest — Prize Wall metals, tokens, signature variants —
- * are left out rather than guessed at.
+ * The set has to be one Riftcodex knows, or a fresh expansion it hasn't ingested
+ * yet (see newExpansions) — never a bundle reprinting another set's cards under
+ * its own code.
  */
 function supplement(cards, products) {
-  const knownSets = new Set(cards.map((c) => c.set_id));
+  const newSets = newExpansions(cards, products);
+  const knownSets = new Set([...cards.map((c) => c.set_id), ...newSets.map((s) => s.id)]);
   const byProduct = new Set(cards.map((c) => String(c.tcgplayer_id)).filter(Boolean));
   const byId = new Set(cards.map((c) => c.id));
 
@@ -385,7 +391,42 @@ function supplement(cards, products) {
     byId.add(id);
   }
 
-  return { added, skipped, unmatched: unmatched.length };
+  return { added, skipped, unmatched: unmatched.length, newSets };
+}
+
+/**
+ * Riftcodex takes a while to ingest a new set — Radiance was on TCGplayer and
+ * dotgg at release while Riftcodex still served nothing for it. A set code
+ * TCGplayer numbers a full run under ("038/167", one shared set size, at least
+ * MIN_EXPANSION cards) is a real expansion and gets tracked from TCGplayer alone
+ * until Riftcodex catches up. Bundles and gift sets (RWB, T12025, LGC) carry a
+ * handful of reprints and never come close.
+ */
+const MIN_EXPANSION = 100;
+
+function newExpansions(cards, products) {
+  const known = new Set(cards.map((c) => c.set_id));
+  const bySet = new Map();
+  for (const p of products) {
+    if (!p.setCode || known.has(p.setCode)) continue;
+    if (!bySet.has(p.setCode)) bySet.set(p.setCode, []);
+    bySet.get(p.setCode).push(p);
+  }
+
+  const out = [];
+  for (const [code, group] of bySet) {
+    const sizes = group
+      .map((p) => /^\d+[a-z*]?\/(\d+)$/i.exec(String(p.customAttributes?.number || ''))?.[1])
+      .filter(Boolean);
+    if (sizes.length < MIN_EXPANSION || new Set(sizes).size !== 1) continue;
+
+    const released = group
+      .map((p) => p.customAttributes?.releaseDate)
+      .filter(Boolean)
+      .sort()[0];
+    out.push({ id: code, name: group[0].setName || code, released: released ? released.slice(0, 10) : null });
+  }
+  return out;
 }
 
 /* ---------------- art for the cards TCGplayer can't illustrate ---------------- */
@@ -418,6 +459,7 @@ async function fetchDotgg() {
  *   ogn-166a-298 -> OGN-166a      alternate art keeps the letter
  *   unl-229*-219 -> UNL-229-STAR  our star is their -STAR
  *   unl-r05      -> UNL-R05       runes, numbered the same way
+ *   ven-sp3-006  -> VEN-SP3       showcases — never VEN-003, the base card
  *   ogn-166-298  -> OGN-166       plain
  */
 function dotggCandidates(card) {
@@ -426,6 +468,9 @@ function dotggCandidates(card) {
 
   const rune = /^r(\d+)([a-z]?)$/i.exec(seg);
   if (rune) return [`${set}-R${rune[1].padStart(2, '0')}${rune[2] || ''}`];
+
+  const showcase = /^sp(\d+)$/i.exec(seg);
+  if (showcase) return [`${set}-SP${showcase[1]}`];
 
   const n = String(card.collector_number).padStart(3, '0');
   const letter = (/^\d+([a-z])/i.exec(seg) || [])[1] || '';
@@ -482,15 +527,18 @@ async function main() {
 
   console.log('Checking TCGplayer for cards Riftcodex is missing...');
   let extra = [];
+  let extraSets = [];
   try {
     const products = await fetchTcgProducts();
-    const { added, skipped, unmatched } = supplement(unique.map(normalize), products);
+    const { added, skipped, unmatched, newSets } = supplement(unique.map(normalize), products);
     extra = added;
+    extraSets = newSets;
     console.log(
       `  ${products.length} products, ${unmatched} unmatched -> ${added.length} added ` +
         `(skipped ${skipped.noId} unpredictable, ${skipped.collision} would collide, ` +
         `${skipped.ambiguous} ambiguous, ${skipped.unknownSet} unknown set)`
     );
+    for (const s of newSets) console.log(`  ${s.id} (${s.name}) isn't on Riftcodex yet — tracking it from TCGplayer`);
   } catch (err) {
     // A supplement is a bonus, not a dependency — a bad day at TCGplayer should
     // still leave you with a complete Riftcodex sync.
@@ -519,12 +567,17 @@ async function main() {
 
   const counts = cards.reduce((acc, c) => ((acc[c.set_id] = (acc[c.set_id] || 0) + 1), acc), {});
 
-  const sets = setsRes.items
-    .map((s) => ({
+  const sets = [
+    ...setsRes.items.map((s) => ({
       id: s.set_id,
       name: s.name,
-      total: counts[s.set_id] || 0,
       released: s.published_on ? s.published_on.slice(0, 10) : null,
+    })),
+    ...extraSets,
+  ]
+    .map((s) => ({
+      ...s,
+      total: counts[s.id] || 0,
       // Promo sets aren't part of normal set completion, so the app can hide them.
       promo: /promotional/i.test(s.name),
     }))
